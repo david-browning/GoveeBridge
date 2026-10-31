@@ -1,0 +1,15 @@
+# Build output
+**/bin/
+**/obj/
+.vs/
+.vscode/
+TestResults/
+*.user
+*.suo
+# Machine-specific settings: never commit the lamp's address or any future secrets
+**/appsettings.local.json
+**/appsettings.*.local.json
+.env
+.env.*
+# SignalRGB local development cache (if used)
+.signalrgb-local/
