@@ -1,99 +1,117 @@
-# GoveeBridge — .NET 10 + SignalRGB network add-on
+# GoveeBridge
 
-A developer-oriented, **experimental** integration for a Govee H6072. SignalRGB renders eight **logical** LEDs, a JavaScript network add-on forwards RGB frames over localhost UDP, and a .NET 10 worker receives them. The worker can operate in safe **Diagnostic** mode or opt-in **GoveeStatic** mode.
+**GoveeBridge** is an experimental .NET 10 application that gives one background Host exclusive responsibility for communicating with a configured Govee lamp. Other local applications, including SignalRGB, send lighting data or control requests to the Host instead of opening competing connections to the lamp.
 
-> **Current scope and honesty:** The physical lamp has only been verified with Govee's standard LAN `devStatus` endpoint in prior manual testing. The bridge implements official status/power/single-color commands, **not** individually addressable streaming. Its eight SignalRGB logical LEDs are averaged into a **single lamp color** until a multizone protocol is verified. The synthetic SignalRGB controller has not yet been integration-tested. No automatic detection of *all* remote scene/color commands is promised.
+The initial target is the **Govee H6072**. The Host can poll its status and report changes through `ILogger`. The current lighting implementation supports whole-lamp RGB control through Govee's standard LAN API; individually addressable segments are not implemented.
 
-## What's in this repo
+> **Project status:** Physical-lamp status monitoring has been exercised with an H6072. The SignalRGB network add-on and its virtual-device registration still require end-to-end testing. Local IPC is experimental and **not yet a secure, authenticated interface for arbitrary clients**. Do not expose it beyond the local machine.
 
-| Location | Role |
-|---|---|
-| `GoveeBridge.js` | SignalRGB network add-on; registers virtual H6072, reads canvas colors, forwards UDP frames. Must be in Git repository **root** for add-on URL installation. |
-| `GoveeBridge.qml` | Optional Qt Quick **add-on configuration panel**, not LED geometry or the Lightscript canvas. |
-| `GoveeBridge.sln` | Open this in Visual Studio with .NET 10 SDK. Includes all .NET projects and root add-on files as Solution Items. |
-| `src/GoveeBridge.Core` | RGB types, IPC frame validation, settings. |
-| `src/GoveeBridge.Protocol` | Govee LAN command serialization and exclusive UDP 4002 transport. |
-| `src/GoveeBridge.Host` | .NET 10 Worker Service, configurable diagnostic/real transport, manual override state, local UDP receiver. |
-| `src/GoveeBridge.Cli` | Command-line `status`, `lamp-status`, `release`, `resume` over loopback UDP. |
-| `tests/GoveeBridge.SmokeTests` | Dependency-free offline checks (run as Console App; no xUnit packages). |
-| `docs/` | Architecture, setup and security/remote notes. |
+## Design at a glance
 
-## First run (safe; does not contact physical lamp)
+    SignalRGB lighting canvas
+      -> GoveeBridge.js (SignalRGB network add-on)
+      -> localhost UDP 127.0.0.1:41005
+                                |
+    Other local programs -------+  (current local command interface)
+                                v
+                       GoveeBridge.Host
+                          |       |
+                     control   status polling -> ILogger
+                          |       |
+                          +--- GoveeLanClient
+                                      |
+                           Govee LAN UDP 4003
+                                      |
+                            Configured H6072
 
-1. In Visual Studio, open `GoveeBridge.sln`; install .NET **10 SDK** if required. Restore NuGet packages for Worker Service hosting.
-2. Set **GoveeBridge.Host** as Startup Project and start debugging. Initial `TransportMode` is `Diagnostic`. It binds only `127.0.0.1:41005`; no Govee command is transmitted, no port 4002 is used.
-3. From another shell run `dotnet run --project src/GoveeBridge.Cli -- status`. You should get JSON showing `mode: Diagnostic`.
-4. Commit and push this repository to GitHub. SignalRGB's **Devices → Add-ons → Add** accepts a public Git URL. The JS/QML files are already at the root, alongside the solution. Installation of this minimal synthetic controller is **not yet guaranteed**, so watch SignalRGB logs.
-5. Keep the **stock SignalRGB Govee add-on disabled**. In the virtual device, add an eight-LED generic strip to channel `Lamp RGB`, position it in the Govee region of your Lightscript layout, and watch Host log incoming representative colors.
-6. Run offline checks: `dotnet run --project tests/GoveeBridge.SmokeTests`.
+* **One Host, one configured lamp.** The Host owns the lamp connection, status cache, and PC-versus-manual control policy. It can run interactively today and is structured as a Worker Service for eventual Windows Service deployment.
+* **SignalRGB is an adapter, not the lamp driver.** The JavaScript add-on captures logical LED colors and sends frames to the Host. It does not need the physical lamp's IP address or Govee's wire format.
+* **Monitoring is independent of control.** In real-lamp mode, the Host queries the lamp at startup and at a configured interval, even while manual control is active. Successful state changes and connectivity transitions are logged through `ILogger`.
+* **The physical remote retains startup priority.** The Host starts in Manual mode. It will not apply incoming lighting frames until PC control is explicitly resumed. Automatic release on observed remote power-off is best effort, not guaranteed remote-event detection.
+* **Future integrations require a secure control interface.** The current UDP listener accepts local frames and commands, but has no client authentication or Windows-user authorization. A protected management channel and status subscriptions remain planned work.
 
-> No separate public addon repository or duplicated file-publishing flow is necessary. If SignalRGB's installer rejects a repository with additional files, you can later publish just the two root addon files to a dedicated repository; we have not observed that issue yet.
+## Repository layout
 
-## Private lamp IP configuration (NOT checked into Git)
+| Path                        | Responsibility                                                                                            |
+| --------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `src/GoveeBridge.Host/`     | Worker, local receiver, frame pump, status monitor, logger, control arbitration, and event-publisher stub |
+| `src/GoveeBridge.Protocol/` | Govee LAN UDP client, command identifiers, JSON payload DTOs, serialization, and status parsing           |
+| `src/GoveeBridge.Core/`     | Shared RGB/frame models, local frame validation, and Host configuration                                   |
+| `GoveeBridge.js`            | Experimental SignalRGB network add-on; registers a logical device and sends colors to the local Host      |
+| `GoveeBridge.qml`           | Optional SignalRGB add-on configuration view; **not** LED geometry or the lighting effect                 |
+| `tests/`                    | Initial smoke checks; a more complete automated suite is planned                                          |
+| `docs/architecture.md`      | Protocol boundaries, concurrency, ownership, security requirements, and roadmap                           |
 
-Copy `src/GoveeBridge.Host/appsettings.local.example.json` to **`src/GoveeBridge.Host/appsettings.local.json`** and replace the example documentation IP with your lamp's address. The latter file is `.gitignore`d. It overrides the committed `appsettings.json`.
+## Requirements
 
-```powershell
-Copy-Item src/GoveeBridge.Host/appsettings.local.example.json src/GoveeBridge.Host/appsettings.local.json
-# Edit LampIp in that private file. Use the real device's assigned address.
-```
+* Windows with the **.NET 10 SDK** or Visual Studio configured for .NET 10 development.
+* For physical-lamp monitoring: an H6072 on a reachable LAN with **LAN Control enabled** in Govee's application.
+* For lighting integration: SignalRGB with network add-on support. The synthetic device implementation in this repository is not yet verified against the installed SignalRGB version.
+* Disable competing Govee LAN integrations that attempt to bind the same UDP response port (notably the stock SignalRGB Govee integration and any enabled iCUE Govee integration).
 
-For published service deployment, copy `appsettings.local.json` alongside the published executable. Host loads config relative to `AppContext.BaseDirectory`, not the process working directory. The committed settings always default to `Diagnostic`, so simply cloning the repository cannot commandeer a lamp.
+## Build and run
 
-**Once intentionally ready to send real commands:**
+From the repository root:
+    dotnet build GoveeBridge.sln
+    dotnet run --project src/GoveeBridge.Host
 
-1. Turn off *both* iCUE's Govee integration and SignalRGB's stock Govee add-on. The bridge must exclusively own the PC's local UDP **4002** response port.
-2. Enable Govee LAN Control; keep lamp/PC on a reachable subnet. `GoveeStatic` requires a private IP address in `appsettings.local.json`.
-3. Restart Host. It **does not automatically take control at startup**. The remote remains in charge.
-4. Run `dotnet run --project src/GoveeBridge.Cli -- lamp-status` to read the lamp's status safely.
-5. To explicitly give PC control to the bridge: `dotnet run --project src/GoveeBridge.Cli -- resume`. It will begin applying colors upon the **next SignalRGB frame**. This can power the lamp on. `release` stops sending colors; it doesn't power the lamp off.
-6. To give remote priority: `dotnet run --project src/GoveeBridge.Cli -- release`.
+Alternatively, open `GoveeBridge.sln` in Visual Studio and launch **GoveeBridge.Host** as the startup project.
 
-`GoveeStatic` intentionally uses at most **one color write per second**, coalesces all virtual LED colors into one representative RGB value, and avoids repeated identical writes. This is for safe functional testing, not smooth animation. Do not switch to high-frame-rate streaming without proving the H6072's supported realtime protocol.
+### Diagnostic mode: no physical lamp access
 
-## Architecture
+The committed `src/GoveeBridge.Host/appsettings.json` sets `Bridge:TransportMode` to `Diagnostic`. This is the safe default:
 
-```text
-Idle Machinery / other Lightscript
-    ↓ SignalRGB samples the virtual LED positions on its canvas
-GoveeBridge.js + GoveeBridge.qml (management UI only)
-    ↓ localhost UDP 127.0.0.1:41005 (small JSON RGB frames)
-GoveeBridge.Host  [.NET 10 Worker, explicit Program.Main()]
-    ├─ BridgeRuntime: PC vs Manual ownership; throttling, diagnostics
-    ├─ Core: validates logical RGB frames and averages colors
-    └─ Protocol: binds UDP 4002, sends Govee JSON to lamp UDP 4003
-             ↓
-          H6072 (only in GoveeStatic mode)
-```
+* The Host binds its local IPC listener to `127.0.0.1:41005`.
+* It does **not** open the Govee status-response port or query/control a physical lamp.
+* When valid RGB frames arrive, it logs a representative averaged color (rate-limited diagnostic output).
 
-**QML is NOT the lighting model.** It describes an optional SignalRGB Add-ons UI panel. `device.addChannel()` and SignalRGB's generic component/layout editor define how the LEDs overlay the canvas. The JS add-on must remain separate from the Lightscript. **Loopback is not a fake physical lamp**: it's a private IPC boundary so the renderer can talk to the real-device service without embedding the lamp's IP or protocol in SignalRGB. It is useful in production as well as testing.
+Diagnostic mode still needs a frame producer, such as the SignalRGB add-on, to show frame messages. Merely starting the Host produces startup logs, not simulated lamp power changes.
 
-## Manual override expectations
+### Real-lamp mode: monitor and optionally control the lamp
 
-- Starts in **Manual** ownership after every service launch. `resume` explicitly takes control; `release` returns it to remote, without changing lamp power.
-- The status polling feature attempts to latch **Manual** if the remote turns the lamp *off* while PC mode is active. **It cannot guarantee priority** if a later PC color command overwrites the change before polling sees it, and other native mode changes may be invisible in `devStatus`.
-- For absolutely reliable remote operation, use the explicit `release` command, or disable the virtual Govee device. Better arbitration needs confirmed remote events or a reliable state-change signal.
-- On abnormal exit, the lamp may retain its last color or remain in its last firmware mode. The service never turns it off automatically on shutdown.
+Copy the example configuration to a machine-local override:
+    Copy-Item src/GoveeBridge.Host/appsettings.local.example.json src/GoveeBridge.Host/appsettings.local.json
 
-## Useful commands
+Edit `appsettings.local.json` and set `LampIp` to the actual lamp address. The JSON below uses a reserved documentation address as a placeholder; the checked-in example file may contain a different value:
+    {
+      "Bridge": {
+        "TransportMode": "GoveeStatic",
+        "LampIp": "192.0.2.5",
+        "RemotePollIntervalMs": 2000
+      },
+      "Host": {
+        "EnableLampMonitoring": true,
+        "LogLampStatusChanges": true
+      }
+    }
 
-```powershell
-dotnet build GoveeBridge.sln
-dotnet run --project src/GoveeBridge.Host
-dotnet run --project src/GoveeBridge.Cli -- status
-dotnet run --project src/GoveeBridge.Cli -- lamp-status
-dotnet run --project src/GoveeBridge.Cli -- release
-dotnet run --project src/GoveeBridge.Cli -- resume
-dotnet run --project tests/GoveeBridge.SmokeTests
-```
+The local override is excluded by `.gitignore`. The Host loads it **after** the default settings, with the override resolved relative to `AppContext.BaseDirectory` (the executable/output directory). The Host project is configured to copy an existing `appsettings.local.json` to build and publish output. **Restart the Host after changing configuration**; reload-on-change is disabled.
 
-## Visual Studio Worker Service / Windows Service
+Start the Host. It should query the lamp immediately and continue polling at the selected interval. Turning the physical lamp on or off should produce `ILogger` messages when a changed status is observed. For example:
+    info: GoveeBridge.Host.BridgeRuntime[0]
+          Lamp online
+    info: GoveeBridge.Host.BridgeRuntime[0]
+          Lamp state changed: On=True, Brightness=75%, RGB=#FF8800, Kelvin=0 (...)
 
-Host is a Worker Service using `Microsoft.Extensions.Hosting.WindowsServices`, but until registered with Windows it runs as a normal debug executable. Once tested, publish Host (preferably self-contained), copy your private settings into the publishing directory, then register the **exe** with SCM (`sc.exe create`). Start/stop with Services.msc or `sc.exe`; Windows service registration is an installation step, not a separate project type. A Windows service's working directory is often System32; config loading already avoids this. See `docs/architecture.md` for constraints.
+This is illustrative output, not a recorded hardware trace. The Host logs **changes**, rather than printing every successful poll. Logging verbosity is controlled by the normal `Logging:LogLevel` settings; the console provider is active when running interactively. A future Windows Service deployment can use other `ILogger` providers.
 
-## References
+Real mode does **not** automatically take PC control. Incoming frames are observed, but are not applied until the Host receives an explicit `resume` request. `release` stops further PC-controlled color writes without powering off the lamp. The current output path averages logical LEDs into a single RGB color and limits writes to the configured minimum interval (default **1000 ms**).
 
-- SignalRGB Govee network add-on reference: https://gitlab.com/signalrgb/Govee/-/raw/main/Govee.js
-- SignalRGB channel sampling: https://docs.signalrgb.com/developer/plugins/device-functions/
-- Govee LAN protocol and port design: https://app-h5.govee.com/user-manual/wlan-guide
-- .NET Windows service hosting: https://learn.microsoft.com/en-us/dotnet/core/extensions/windows-service
+## SignalRGB integration: next integration milestone
+
+The repository-root `GoveeBridge.js` is a **network add-on**, not a SignalRGB Lightscript. It is intended to register a virtual H6072 with **eight logical LED positions**, sample SignalRGB's lighting canvas, and transmit RGB frames to the Host over localhost UDP. The current intended installation route is **SignalRGB → Devices → Add-ons → Add** using this repository's public Git URL; the exact menu and synthetic registration behavior need verification on the installed version.
+
+The logical LEDs do **not** imply that the real H6072 exposes eight addressable LAN segments. In the present `GoveeStatic` mode they are averaged into one color. The optional `GoveeBridge.qml` provides an add-on view only; LED placement is configured through SignalRGB's channel/component layout.
+
+**The add-on's synthetic controller registration has not yet been tested end to end.** The next milestone is to load the add-on, verify that the logical device appears in SignalRGB, assign a generic eight-LED component to the `Lamp RGB` channel, position it in SignalRGB Layout, and confirm that frame changes reach the Host in Diagnostic mode before attempting full-lamp control.
+
+## Safety and known limitations
+
+* **Localhost is not authentication.** Any local process capable of sending UDP to port `41005` can currently submit frames or supported commands. Do not treat the current IPC as a trusted public API. Secure, access-controlled management IPC is an explicit prerequisite for broader use or a persistent privileged service.
+* **No real-time multizone control yet.** Only standard whole-device LAN RGB control is implemented. High-rate or per-segment streaming requires separate protocol verification.
+* **Remote takeover is best effort.** Govee's standard status API is polled; it does not identify which actor changed a setting or provide dependable push notifications. An observed external power-off can release PC ownership, but short-lived changes and native scenes may not be detected. Color-mismatch takeover detection is experimental and disabled by default.
+* **One device per Host instance.** Multi-device discovery and coordination are outside the current design.
+* **No status event transport yet.** `IBridgeEventPublisher` and event types exist, but the registered implementation is a no-op. State changes are currently observable through `ILogger` and the Host's cached status responses.
+* **Windows Service hosting is not deployment.** The Host supports Windows Service integration, but must still be published, installed, and configured with appropriate permissions before running as a service.
+
+See [Architecture](docs/architecture.md) for current IPC formats, scheduling and ownership behavior, the security-hardening plan, and planned testing.
