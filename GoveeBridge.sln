@@ -1,6 +1,6 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.14.36420.41
+# Visual Studio Version 18
+VisualStudioVersion = 18.11.12324.101 stable
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GoveeBridge.Host", "src\GoveeBridge.Host\GoveeBridge.Host.csproj", "{9F15BB1D-604A-5C3C-AEE5-26CF382A5A8A}"
 EndProject
@@ -8,20 +8,24 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GoveeBridge.Core", "src\Gov
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GoveeBridge.Protocol", "src\GoveeBridge.Protocol\GoveeBridge.Protocol.csproj", "{E5F59F89-1F0A-57AE-9CBC-BF40BF59A4DA}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GoveeBridge.Cli", "src\GoveeBridge.Cli\GoveeBridge.Cli.csproj", "{421695B0-A7FE-5EF6-8DB4-0117175E2E98}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GoveeBridge.SmokeTests", "tests\GoveeBridge.SmokeTests\GoveeBridge.SmokeTests.csproj", "{EB97DB13-B0A8-5D83-90A5-8792E0C07457}"
-EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "SignalRGB Add-on and Documentation", "SignalRGB Add-on and Documentation", "{6D0C6A3A-2044-5A48-AB02-406CB3451526}"
 	ProjectSection(SolutionItems) = preProject
+		.editorconfig = .editorconfig
+		.gitignore = .gitignore
+		src\GoveeBridge.Host\appsettings.local.example.json = src\GoveeBridge.Host\appsettings.local.example.json
+		docs\architecture.md = docs\architecture.md
+		Directory.Build.props = Directory.Build.props
 		GoveeBridge.js = GoveeBridge.js
 		GoveeBridge.qml = GoveeBridge.qml
 		README.md = README.md
-		.gitignore = .gitignore
-		.editorconfig = .editorconfig
-		Directory.Build.props = Directory.Build.props
-		docs\architecture.md = docs\architecture.md
-		src\GoveeBridge.Host\appsettings.local.example.json = src\GoveeBridge.Host\appsettings.local.example.json
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "GoveeBridge.PowerShell", "GoveeBridge.PowerShell", "{D626D638-10DE-4FBC-A2DB-219D8C1F7E12}"
+	ProjectSection(SolutionItems) = preProject
+		src\GoveeBridge.PowerShell\GoveeLan.psd1 = src\GoveeBridge.PowerShell\GoveeLan.psd1
+		src\GoveeBridge.PowerShell\GoveeLan.psm1 = src\GoveeBridge.PowerShell\GoveeLan.psm1
+		src\GoveeBridge.PowerShell\README.md = src\GoveeBridge.PowerShell\README.md
+		src\GoveeBridge.PowerShell\Test-GoveeLan.Offline.ps1 = src\GoveeBridge.PowerShell\Test-GoveeLan.Offline.ps1
 	EndProjectSection
 EndProject
 Global
@@ -42,14 +46,6 @@ Global
 		{E5F59F89-1F0A-57AE-9CBC-BF40BF59A4DA}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E5F59F89-1F0A-57AE-9CBC-BF40BF59A4DA}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E5F59F89-1F0A-57AE-9CBC-BF40BF59A4DA}.Release|Any CPU.Build.0 = Release|Any CPU
-		{421695B0-A7FE-5EF6-8DB4-0117175E2E98}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{421695B0-A7FE-5EF6-8DB4-0117175E2E98}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{421695B0-A7FE-5EF6-8DB4-0117175E2E98}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{421695B0-A7FE-5EF6-8DB4-0117175E2E98}.Release|Any CPU.Build.0 = Release|Any CPU
-		{EB97DB13-B0A8-5D83-90A5-8792E0C07457}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{EB97DB13-B0A8-5D83-90A5-8792E0C07457}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{EB97DB13-B0A8-5D83-90A5-8792E0C07457}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{EB97DB13-B0A8-5D83-90A5-8792E0C07457}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
