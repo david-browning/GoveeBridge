@@ -5,48 +5,36 @@ using GoveeBridge.Core;
 
 namespace GoveeBridge.Protocol;
 
-/// <summary>One owner for UDP 4002, which Govee uses as a fixed reply port.</summary>
-public sealed class GoveeLanClient : IDisposable
+/// <summary>
+/// Owns the fixed Govee LAN response socket for one lamp. The Host is responsible
+/// for arbitrating access and for deciding whether a command may be issued.
+/// </summary>
+/// <remarks>
+/// Sends are UDP best effort: completing a send does not prove the lamp applied it.
+/// This client cannot distinguish physical-remote actions from other LAN clients.
+/// </remarks>
+public sealed class GoveeLanClient : IGoveeRealtimeClient
 {
    public GoveeLanClient(string ip, int timeoutMs)
    {
-      if (!IPAddress.TryParse(ip, out IPAddress? address))
+      if (!IPAddress.TryParse(ip, out IPAddress? address) ||
+         address.AddressFamily != AddressFamily.InterNetwork)
       {
-         throw new ArgumentException("Invalid Govee lamp IP.", nameof(ip));
+         throw new ArgumentException("A Govee lamp requires an IPv4 address.", nameof(ip));
       }
 
-      _lamp = new IPEndPoint(address, 4003);
+      _lamp = new IPEndPoint(address, GoveeLanPorts.Command);
       _timeoutMs = timeoutMs;
 
-      // Fails deliberately if iCUE or the original Govee add-on still owns 4002.
-      _udp = new UdpClient(new IPEndPoint(IPAddress.Any, 4002));
+      // This must be the only owner of the local fixed reply port.
+      _udp = new UdpClient(new IPEndPoint(IPAddress.Any, GoveeLanPorts.Response));
    }
 
-   public async Task SetPowerAsync(bool on, CancellationToken ct)
-   {
-      await _gate.WaitAsync(ct);
-      try
-      {
-         await SendUnsafeAsync(GoveeLanPackets.Power(on), ct);
-      }
-      finally
-      {
-         _gate.Release();
-      }
-   }
+   public Task SetRealtimeEnabledAsync(bool enabled, CancellationToken ct) =>
+      SendAsync(GoveeLanPackets.RazerEnabled(enabled), ct);
 
-   public async Task SetColorAsync(RgbColor color, CancellationToken ct)
-   {
-      await _gate.WaitAsync(ct);
-      try
-      {
-         await SendUnsafeAsync(GoveeLanPackets.Color(color), ct);
-      }
-      finally
-      {
-         _gate.Release();
-      }
-   }
+   public Task SendRealtimeFrameAsync(RgbFrame frame, CancellationToken ct) =>
+      SendAsync(GoveeLanPackets.RazerFrame(frame, _gradient), ct);
 
    public async Task<GoveeDeviceStatus?> GetStatusAsync(CancellationToken ct)
    {
@@ -62,10 +50,13 @@ public sealed class GoveeLanClient : IDisposable
             UdpReceiveResult response = await _udp.ReceiveAsync(timeout.Token);
             if (!response.RemoteEndPoint.Address.Equals(_lamp.Address))
             {
+               // Ignore packets that did not come from the lamp that this class
+               // instance is monitoring.
                continue;
             }
 
-            if (GoveeLanPackets.TryReadStatus(response.Buffer, out GoveeDeviceStatus? status))
+            if (GoveeLanPackets.TryReadStatus(
+               response.Buffer, out GoveeDeviceStatus? status))
             {
                return status;
             }
@@ -74,6 +65,32 @@ public sealed class GoveeLanClient : IDisposable
       catch (OperationCanceledException) when (!ct.IsCancellationRequested)
       {
          return null;
+      }
+      finally
+      {
+         _gate.Release();
+      }
+
+   }
+
+   public Task SetPowerAsync(bool on, CancellationToken ct) =>
+      SendAsync(GoveeLanPackets.Power(on), ct);
+
+   public Task SetBrightnessAsync(int percentage, CancellationToken ct) =>
+      SendAsync(GoveeLanPackets.Brightness(percentage), ct);
+
+   public Task SetColorAsync(RgbColor color, CancellationToken ct) =>
+      SendAsync(GoveeLanPackets.Color(color), ct);
+
+   public Task SetColorTemperatureAsync(int kelvin, CancellationToken ct) =>
+      SendAsync(GoveeLanPackets.ColorTemperature(kelvin), ct);
+
+   private async Task SendAsync(string json, CancellationToken ct)
+   {
+      await _gate.WaitAsync(ct);
+      try
+      {
+         await SendUnsafeAsync(json, ct);
       }
       finally
       {
@@ -92,6 +109,8 @@ public sealed class GoveeLanClient : IDisposable
       _udp.Dispose();
       _gate.Dispose();
    }
+
+   private const bool _gradient = true;
 
    private readonly UdpClient _udp;
    private readonly IPEndPoint _lamp;

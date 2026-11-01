@@ -1,6 +1,4 @@
-﻿using GoveeBridge.Core;
-
-namespace GoveeBridge.Protocol;
+﻿namespace GoveeBridge.Core;
 
 /// <summary>
 /// The status object returned from a lamp when the devStatus command is 

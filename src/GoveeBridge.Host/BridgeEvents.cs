@@ -1,4 +1,4 @@
-using GoveeBridge.Protocol;
+using GoveeBridge.Core;
 
 namespace GoveeBridge.Host;
 
