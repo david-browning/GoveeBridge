@@ -5,16 +5,16 @@ namespace GoveeBridge.Host;
 /// <summary>Host event contract for a future per-client named-pipe broadcaster.</summary>
 public enum BridgeEventKind
 {
-    LampStatusChanged,
-    LampOnline,
-    LampOffline,
-    ControlOwnershipChanged
+   LampStatusChanged,
+   LampOnline,
+   LampOffline,
+   ControlOwnershipChanged
 }
 
 public sealed record BridgeEvent(
     BridgeEventKind Kind,
     DateTimeOffset Timestamp,
-    GoveeStatus? LampStatus,
+    GoveeDeviceStatus? LampStatus,
     string? Details);
 
 /// <summary>
@@ -23,11 +23,11 @@ public sealed record BridgeEvent(
 /// </summary>
 public interface IBridgeEventPublisher
 {
-    void Publish(BridgeEvent bridgeEvent);
+   void Publish(BridgeEvent bridgeEvent);
 }
 
 /// <summary>No subscribers yet. Lamp changes are still written through ILogger.</summary>
 public sealed class NullBridgeEventPublisher : IBridgeEventPublisher
 {
-    public void Publish(BridgeEvent bridgeEvent) { }
+   public void Publish(BridgeEvent bridgeEvent) { }
 }
