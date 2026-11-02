@@ -6,6 +6,8 @@ public static class BridgeHostDefaults
    public const int FramePumpIntervalMs = 50;
    public const int FrameStaleAfterMs = 5000;
    public const int ColorMismatchGraceMs = 1500;
+   public const int StaticVerificationGraceMs = 750;
+   public const int StaticColorRetryLimit = 1;
    public const int ColorMismatchRequiredPolls = 2;
    public const int RealtimeMinimumFrameIntervalMs = 100;
    public const int RealtimeKeepaliveIntervalMs = 2000;
@@ -26,6 +28,10 @@ public static class BridgeHostConstraints
    public const int MinimumFrameStaleAfterMs = 500;
    public const int MaximumFrameStaleAfterMs = 60000;
    public const int MinimumColorMismatchGraceMs = 0;
+   public const int MinimumStaticVerificationGraceMs = 0;
+   public const int MaximumStaticVerificationGraceMs = 5000;
+   public const int MinimumStaticColorRetryLimit = 0;
+   public const int MaximumStaticColorRetryLimit = 2;
    public const int MaximumColorMismatchGraceMs = 30000;
    public const int MinimumColorMismatchRequiredPolls = 2;
    public const int MaximumColorMismatchRequiredPolls = 10;
@@ -61,6 +67,21 @@ public sealed class BridgeHostOptions
    public bool AutoReleaseOnColorMismatch { get; set; } = false;
 
    public int ColorMismatchGraceMs { get; set; } = BridgeHostDefaults.ColorMismatchGraceMs;
+
+   /// <summary>
+   /// Minimum delay from a static RGB send to a usable verification response.
+   /// This is a processing/grace interval, not an additional status poll.
+   /// </summary>
+   public int StaticVerificationGraceMs { get; set; } =
+      BridgeHostDefaults.StaticVerificationGraceMs;
+
+   /// <summary>
+   /// Number of additional static RGB writes allowed when a later devStatus
+   /// still reports the same color/mode as before the original send.
+   /// Never resend indefinitely; scene mode is not reported by devStatus.
+   /// </summary>
+   public int StaticColorRetryLimit { get; set; } =
+      BridgeHostDefaults.StaticColorRetryLimit;
    public int ColorMismatchRequiredPolls { get; set; } = BridgeHostDefaults.ColorMismatchRequiredPolls;
 
    /// <summary>Fastest allowed outgoing Razer frame interval, even if inputs arrive faster.</summary>
@@ -94,6 +115,10 @@ public sealed class BridgeHostOptions
          BridgeHostConstraints.MinimumFrameStaleAfterMs, BridgeHostConstraints.MaximumFrameStaleAfterMs);
       ValidateRange(ColorMismatchGraceMs, nameof(ColorMismatchGraceMs),
          BridgeHostConstraints.MinimumColorMismatchGraceMs, BridgeHostConstraints.MaximumColorMismatchGraceMs);
+      ValidateRange(StaticVerificationGraceMs, nameof(StaticVerificationGraceMs),
+         BridgeHostConstraints.MinimumStaticVerificationGraceMs, BridgeHostConstraints.MaximumStaticVerificationGraceMs);
+      ValidateRange(StaticColorRetryLimit, nameof(StaticColorRetryLimit),
+         BridgeHostConstraints.MinimumStaticColorRetryLimit, BridgeHostConstraints.MaximumStaticColorRetryLimit);
       ValidateRange(ColorMismatchRequiredPolls, nameof(ColorMismatchRequiredPolls),
          BridgeHostConstraints.MinimumColorMismatchRequiredPolls, BridgeHostConstraints.MaximumColorMismatchRequiredPolls);
       ValidateRange(RealtimeMinimumFrameIntervalMs, nameof(RealtimeMinimumFrameIntervalMs),

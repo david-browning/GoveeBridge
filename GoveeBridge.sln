@@ -1,6 +1,6 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
-VisualStudioVersion = 18.11.12324.101 stable
+VisualStudioVersion = 18.11.12324.101
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GoveeBridge.Host", "src\GoveeBridge.Host\GoveeBridge.Host.csproj", "{9F15BB1D-604A-5C3C-AEE5-26CF382A5A8A}"
 EndProject
@@ -28,6 +28,40 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "GoveeBridge.PowerShell", "G
 		src\GoveeBridge.PowerShell\Test-GoveeLan.Offline.ps1 = src\GoveeBridge.PowerShell\Test-GoveeLan.Offline.ps1
 	EndProjectSection
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "GoveeBridge.PowerShell.Host", "GoveeBridge.PowerShell.Host", "{27EB4C8F-37F8-4FE1-B06B-49FCB5BB2DC6}"
+	ProjectSection(SolutionItems) = preProject
+		src\GoveeBridge.PowerShell.Host\GoveeHost.psd1 = src\GoveeBridge.PowerShell.Host\GoveeHost.psd1
+		src\GoveeBridge.PowerShell.Host\GoveeHost.psm1 = src\GoveeBridge.PowerShell.Host\GoveeHost.psm1
+		src\GoveeBridge.PowerShell.Host\README.md = src\GoveeBridge.PowerShell.Host\README.md
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tests", "Tests", "{FCD8D9E6-681E-4FC9-97F9-2E2C1F32B661}"
+	ProjectSection(SolutionItems) = preProject
+		src\GoveeBridge.PowerShell.Host\Tests\Test-GoveeHost.Contracts.ps1 = src\GoveeBridge.PowerShell.Host\Tests\Test-GoveeHost.Contracts.ps1
+		src\GoveeBridge.PowerShell.Host\Tests\Test-GoveeHost.Integration.ps1 = src\GoveeBridge.PowerShell.Host\Tests\Test-GoveeHost.Integration.ps1
+		src\GoveeBridge.PowerShell.Host\Tests\Test-GoveeHost.Offline.ps1 = src\GoveeBridge.PowerShell.Host\Tests\Test-GoveeHost.Offline.ps1
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Scripts", "Scripts", "{5330E82A-12D4-4825-B9E0-16CF970CB699}"
+	ProjectSection(SolutionItems) = preProject
+		src\GoveeBridge.PowerShell.Host\scripts\Set-GoveeHostBrightness.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Set-GoveeHostBrightness.ps1
+		src\GoveeBridge.PowerShell.Host\scripts\Set-GoveeHostColor.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Set-GoveeHostColor.ps1
+		src\GoveeBridge.PowerShell.Host\scripts\Set-GoveeHostPower.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Set-GoveeHostPower.ps1
+		src\GoveeBridge.PowerShell.Host\scripts\Start-GoveeHostRedBlue.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Start-GoveeHostRedBlue.ps1
+		src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostBrightness.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostBrightness.ps1
+		src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostColor.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostColor.ps1
+		src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostFrameColor.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostFrameColor.ps1
+		src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostPower.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostPower.ps1
+		src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostRedBlue.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostRedBlue.ps1
+		src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostTemperature.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostTemperature.ps1
+		src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostWatch.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Test-GoveeHostWatch.ps1
+		src\GoveeBridge.PowerShell.Host\scripts\Watch-GoveeHostStatus.ps1 = src\GoveeBridge.PowerShell.Host\scripts\Watch-GoveeHostStatus.ps1
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tests", "Tests", "{180F268E-EA52-4C85-B30D-40BAFDD1321D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GoveeBridge.IpcContractTests", "tests\GoveeBridge.IpcContractTests\GoveeBridge.IpcContractTests.csproj", "{86A438E0-006F-8CC8-645E-08FB7CC40D08}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -46,8 +80,20 @@ Global
 		{E5F59F89-1F0A-57AE-9CBC-BF40BF59A4DA}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E5F59F89-1F0A-57AE-9CBC-BF40BF59A4DA}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E5F59F89-1F0A-57AE-9CBC-BF40BF59A4DA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{86A438E0-006F-8CC8-645E-08FB7CC40D08}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{86A438E0-006F-8CC8-645E-08FB7CC40D08}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{86A438E0-006F-8CC8-645E-08FB7CC40D08}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{86A438E0-006F-8CC8-645E-08FB7CC40D08}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{FCD8D9E6-681E-4FC9-97F9-2E2C1F32B661} = {27EB4C8F-37F8-4FE1-B06B-49FCB5BB2DC6}
+		{5330E82A-12D4-4825-B9E0-16CF970CB699} = {27EB4C8F-37F8-4FE1-B06B-49FCB5BB2DC6}
+		{86A438E0-006F-8CC8-645E-08FB7CC40D08} = {180F268E-EA52-4C85-B30D-40BAFDD1321D}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {B305B99D-52F9-419F-9935-4756078CEC47}
 	EndGlobalSection
 EndGlobal
