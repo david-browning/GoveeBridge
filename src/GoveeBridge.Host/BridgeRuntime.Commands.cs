@@ -1,7 +1,7 @@
 using System.Net.Sockets;
+using System.Text.Json;
 using GoveeBridge.Core;
 using GoveeBridge.Core.Ipc;
-using GoveeBridge.Protocol;
 
 namespace GoveeBridge.Host;
 
@@ -12,27 +12,98 @@ public sealed partial class BridgeRuntime
    /// frames use ReceiveFrame instead and never enter this management queue.
    /// </summary>
    public async Task<BridgeIpcResponse> ExecuteCommandAsync(
-      string command, 
+      JsonDocument buffer,
       CancellationToken ct)
    {
+      JsonElement root = buffer.RootElement;
+
+      if (!root.TryGetProperty("type", out JsonElement type) || type.ValueKind != JsonValueKind.String || type.GetString() != "command" ||
+         !root.TryGetProperty("action", out JsonElement action) || action.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(action.GetString()))
+      {
+         return new BridgeIpcErrorResponse($"Invalid command packet");
+      }
+
+      var command = action.GetString();
       ArgumentException.ThrowIfNullOrWhiteSpace(command);
+
+      JsonElement? data = root.TryGetProperty(
+         BridgeIpcPropertyNames.Data, out JsonElement value) ? value : null;
+
       await _lampGate.WaitAsync(ct);
       try
       {
-         return command.Trim().ToLowerInvariant() switch
+         switch (command.Trim().ToLowerInvariant())
          {
-            BridgeIpcActions.Resume => ResumeUnsafe(),
-            BridgeIpcActions.Release => await ReleaseCommandUnsafeAsync(ct),
-            BridgeIpcActions.GetHostStatus => SnapshotUnsafe(),
-            BridgeIpcActions.GetLampStatus => await GetLampStatusUnsafeAsync(ct),
-            BridgeIpcActions.SetPower => await SetLampPowerUnsafeAsync(ct),
-            _ => new BridgeIpcErrorResponse($"Unknown command: {command}")
-         };
+            case BridgeIpcActions.Resume:
+            {
+               return ResumeUnsafe();
+            }
+            case BridgeIpcActions.Release:
+            {
+               return await ReleaseCommandUnsafeAsync(ct);
+            }
+            case BridgeIpcActions.GetHostStatus:
+            {
+               return SnapshotUnsafe();
+            }
+            case BridgeIpcActions.GetLampStatus:
+            {
+               return await GetLampStatusUnsafeAsync(ct);
+            }
+            case BridgeIpcActions.SetPower:
+            {
+               var request = DeserializePayload<BridgeIpcPowerPayload>(data);
+               return await SetLampPowerUnsafeAsync(request.IsOn, ct);
+            }
+            case BridgeIpcActions.SetColorTemperature:
+            {
+               var request = DeserializePayload<BridgeIpcColorTemperaturePayload>(data);
+               return await SetLampTemperatureUnsafeAsync(request.Kelvin, ct);
+            }
+            case BridgeIpcActions.SetBrightness:
+            {
+               var request = DeserializePayload<BridgeIpcBrightnessPayload>(data);
+               return await SetLampBrightnessUnsafeAsync(request.BrightnessPercent, ct);
+            }
+            default:
+            {
+               return new BridgeIpcErrorResponse($"Unknown command: {command}");
+            }
+         }
+      }
+      catch (OperationCanceledException) when (ct.IsCancellationRequested)
+      {
+         throw;
+      }
+      catch (Exception ex) when (ex is JsonException or ArgumentException)
+      {
+         _log.LogWarning(ex, "Invalid IPC command payload.");
+         return new BridgeIpcErrorResponse(ex.Message);
+      }
+      catch (Exception ex)
+      {
+         _log.LogError(ex, "Command execution failed.");
+         return new BridgeIpcErrorResponse(
+            "An internal error occurred while processing the command.");
       }
       finally
       {
          _lampGate.Release();
       }
+   }
+
+   private static T DeserializePayload<T>(JsonElement? data) where T : class
+   {
+      if (data is not JsonElement payload ||
+          payload.ValueKind != JsonValueKind.Object)
+      {
+         throw new ArgumentException(
+            $"Missing or invalid payload for {typeof(T).Name}.");
+      }
+
+      return payload.Deserialize<T>()
+         ?? throw new JsonException(
+            $"Could not deserialize {typeof(T).Name}.");
    }
 
    /// <summary>
@@ -121,9 +192,71 @@ public sealed partial class BridgeRuntime
    }
 
    private async Task<BridgeIpcResponse> SetLampPowerUnsafeAsync(
+      bool isOn,
       CancellationToken ct)
    {
-      throw new NotImplementedException();
+      var check = CheckLampReady();
+      if(check != null)
+      {
+         return check;
+      }
+
+      await _lamp!.SetPowerAsync(isOn, ct);
+
+      // This describes Host bookkeeping, not confirmation that
+      // the physical lamp applied the requested change.
+      return SnapshotUnsafe();
+   }
+
+   private async Task<BridgeIpcResponse> SetLampTemperatureUnsafeAsync(
+      int kelvin,
+      CancellationToken ct)
+   {
+      var check = CheckLampReady();
+      if (check != null)
+      {
+         return check;
+      }
+
+      await _lamp!.SetColorTemperatureAsync(kelvin, ct);
+      return SnapshotUnsafe();
+   }
+
+   private async Task<BridgeIpcResponse> SetLampBrightnessUnsafeAsync(
+      int percent,
+      CancellationToken ct)
+   {
+      var check = CheckLampReady();
+      if (check != null)
+      {
+         return check;
+      }
+
+      await _lamp!.SetBrightnessAsync(percent, ct);
+      return SnapshotUnsafe();
+   }
+
+   /// <summary>
+   /// Returns null if the lamp is ready for a command. 
+   /// Otherwise returns the error that should be propagated up the host.
+   /// </summary>
+   /// <returns></returns>
+   private BridgeIpcErrorResponse? CheckLampReady()
+   {
+      if (_lamp is null)
+      {
+         return new BridgeIpcErrorResponse(
+            "Diagnostic mode has no physical lamp connection");
+      }
+
+      // Do not change the lamp unless PC control was granted.
+      if (!_session.IsPcOwner)
+      {
+         return new BridgeIpcErrorResponse(
+            "PC control is required before changing lamp power.");
+      }
+
+      return null;
    }
 
    /// <summary>

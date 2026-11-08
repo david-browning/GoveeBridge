@@ -45,6 +45,26 @@ public sealed class BridgeWorker : BackgroundService
       // application IPC port, not a Govee LAN socket. It is distinct from
       // Govee's fixed physical reply port 4002, owned by GoveeLanClient.
       using UdpClient udp = new(new IPEndPoint(IPAddress.Loopback, _settings.FrameListenPort));
+      
+      // On Windows, an unsuccessful UDP reply can generate an ICMP
+      // Port Unreachable notification. Winsock normally surfaces that
+      // notification as SocketError.ConnectionReset during ReceiveAsync.
+      //
+      // This Host is a long-lived UDP server, not a connected client.
+      // A caller that times out or exits must not terminate our listener.
+      if (OperatingSystem.IsWindows())
+      {
+         // This constant is defined in the Windows header files.
+         const int SIO_UDP_CONNRESET = unchecked((int)0x9800000C);
+
+         // More details on setting Winsock IO controls: https://learn.microsoft.com/en-us/windows/win32/winsock/winsock-ioctls
+         // Search for SIO_UDP_CONNRESET on the page.
+         udp.Client.IOControl(
+            SIO_UDP_CONNRESET,
+            new byte[sizeof(int)], // FALSE
+            null);
+      }
+
       // A linked token lets us stop *all* helper loops whenever either the
       // Host requests shutdown or ExecuteAsync exits unexpectedly.
       using var workerLifetime =
@@ -166,24 +186,12 @@ public sealed class BridgeWorker : BackgroundService
             // Commands currently use {"type":"command","action":"resume"}
             // (or release/status/lamp-status). This IPC schema is distinct
             // from the JSON packets sent over LAN to the physical device.
+            // ExecuteCommand will validate the JSON is valid.
             using JsonDocument document = JsonDocument.Parse(packet.Buffer);
-            JsonElement root = document.RootElement;
-
-            if (!root.TryGetProperty("type", out JsonElement type) ||
-               type.ValueKind != JsonValueKind.String ||
-               type.GetString() != "command" ||
-               !root.TryGetProperty("action", out JsonElement action) ||
-               action.ValueKind != JsonValueKind.String ||
-               string.IsNullOrWhiteSpace(action.GetString()))
-            {
-               await SendReplyAsync(udp, packet.RemoteEndPoint,
-                  new { error = "Invalid command packet" }, ct);
-               continue;
-            }
 
             // Potentially slow: release may disarm Razer, lamp-status may poll
             // the device. Run here, not in the fast UDP receive loop.
-            object reply = await _runtime.ExecuteCommandAsync(action.GetString()!, ct);
+            object reply = await _runtime.ExecuteCommandAsync(document, ct);
             await SendReplyAsync(udp, packet.RemoteEndPoint, reply, ct);
          }
          catch (OperationCanceledException) when (ct.IsCancellationRequested)
