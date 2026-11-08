@@ -3,95 +3,104 @@ using System.Text.Json.Serialization;
 namespace GoveeBridge.Core.Ipc;
 
 /// <summary>
-/// An IPC management command with no data payload, for example 'resume'.
-/// Serializes to exactly {"type":"command","action":"resume"}.
+/// Parameterless management command.
 /// </summary>
-/// <remarks>
-/// Use <see cref="BridgeIpcRequests"/> to create supported requests rather than
-/// constructing arbitrary command/action combinations. The Host must still
-/// validate all messages received from external processes.
-/// </remarks>
 public sealed class BridgeIpcCommandRequest
 {
-   internal BridgeIpcCommandRequest(string action)
+   /// <summary>
+   /// Constructs a command using the stable wire action and required lamp target.
+   /// </summary>
+   internal BridgeIpcCommandRequest(string action, string lampId)
    {
       Action = action;
+      ArgumentException.ThrowIfNullOrWhiteSpace(lampId);
+      LampId = lampId;
    }
 
-   /// <summary>Identifies this as a management command.</summary>
+   /// <summary>
+   /// Management-command discriminator.
+   /// </summary>
    [JsonPropertyName(BridgeIpcPropertyNames.Type)]
    public string Type => BridgeIpcMessageTypes.Command;
 
-   /// <summary>The operation to perform.</summary>
+   /// <summary>
+   /// The requested operation.
+   /// </summary>
    [JsonPropertyName(BridgeIpcPropertyNames.Action)]
    public string Action { get; }
+
+   /// <summary>
+   /// Target lamp's configured stable Id
+   /// </summary>
+   [JsonPropertyName(BridgeIpcPropertyNames.LampId)]
+   public string LampId { get; }
 }
 
 /// <summary>
-/// A management command carrying an operation-specific data payload.
-/// For example, set-brightness includes a brightnessPercent field in data.
+/// Management command carrying an existing operation-specific Core payload.
 /// </summary>
-/// <typeparam name="TPayload">Strongly typed request body.</typeparam>
 public sealed class BridgeIpcCommandRequest<TPayload> where TPayload : class
 {
-   internal BridgeIpcCommandRequest(string action, TPayload data)
+   /// <summary>
+   /// Constructs the request, retaining the concrete payload for JSON serialization.
+   /// </summary>
+   internal BridgeIpcCommandRequest(string action, TPayload data, string lampId)
    {
       ArgumentNullException.ThrowIfNull(data);
       Action = action;
       Data = data;
+      ArgumentException.ThrowIfNullOrWhiteSpace(lampId);
+      LampId = lampId;
    }
 
-   /// <summary>Identifies this as a management command.</summary>
    [JsonPropertyName(BridgeIpcPropertyNames.Type)]
    public string Type => BridgeIpcMessageTypes.Command;
 
-   /// <summary>The operation to perform.</summary>
    [JsonPropertyName(BridgeIpcPropertyNames.Action)]
    public string Action { get; }
 
-   /// <summary>Parameters for the operation.</summary>
+   [JsonPropertyName(BridgeIpcPropertyNames.LampId)]
+   public string LampId { get; }
+
    [JsonPropertyName(BridgeIpcPropertyNames.Data)]
    public TPayload Data { get; }
 }
 
-/// <summary>Parameters for a power-state request.</summary>
+/// <summary>
+/// Requested device power state.
+/// </summary>
 public sealed class BridgeIpcPowerPayload
 {
-   /// <summary>True requests power on; false requests power off.</summary>
    [JsonPropertyName(BridgeIpcPropertyNames.IsOn)]
    public required bool IsOn { get; init; }
 }
 
-/// <summary>Parameters for a global-brightness request.</summary>
+/// <summary>
+/// Global brightness, where zero is interpreted as an explicit power-off request.
+/// </summary>
 public sealed class BridgeIpcBrightnessPayload
 {
-   /// <summary>
-   /// Requested brightness from 0 through 100. This is a desired-state
-   /// value, not a Govee LAN 'brightness' packet. The Host must decide how
-   /// to implement zero on devices whose brightness command starts at 1.
-   /// </summary>
    [JsonPropertyName(BridgeIpcPropertyNames.BrightnessPercent)]
    public required int BrightnessPercent { get; init; }
 }
 
-/// <summary>Parameters for a white color-temperature request.</summary>
+/// <summary>
+/// White temperature requested from a device that supports that capability.
+/// </summary>
 public sealed class BridgeIpcColorTemperaturePayload
 {
-   /// <summary>
-   /// Requested color temperature in Kelvin. The receiving Host must validate
-   /// the range against the selected physical device's capabilities.
-   /// </summary>
    [JsonPropertyName(BridgeIpcPropertyNames.Kelvin)]
    public required int Kelvin { get; init; }
 }
 
 /// <summary>
-/// One RGB color in an IPC message. This is deliberately independent of the
-/// JSON DTOs used by Govee's physical LAN protocol.
+/// Three components of one IPC RGB color, independent of LAN packet encoding.
 /// </summary>
 public sealed class BridgeIpcRgbColor
 {
-   /// <summary>Constructs a wire RGB color from component bytes.</summary>
+   /// <summary>
+   /// Creates an RGB value from exact component bytes; never from a base64 array.
+   /// </summary>
    [JsonConstructor]
    public BridgeIpcRgbColor(byte r, byte g, byte b)
    {
@@ -110,44 +119,40 @@ public sealed class BridgeIpcRgbColor
    public byte B { get; }
 }
 
-/// <summary>Parameters for setting a single, uniform RGB color.</summary>
+/// <summary>
+/// One uniform RGB color for a discrete set-color command.
+/// </summary>
 public sealed class BridgeIpcColorPayload
 {
-   /// <summary>A solid RGB color, not a multizone frame.</summary>
    [JsonPropertyName(BridgeIpcPropertyNames.Color)]
    public required BridgeIpcRgbColor Color { get; init; }
 }
 
 /// <summary>
-/// One time-sensitive streaming RGB frame in the existing SignalRGB-compatible
-/// Host wire format: {"type":"rgb-frame","count":2,"colors":[255,0,0,0,0,255]}.
+/// One complete time-sensitive RGB frame, with a required target-lamp selector.
 /// </summary>
-/// <remarks>
-/// 'colors' is an array of INTEGER components in RGB order, not byte[].
-/// System.Text.Json serializes byte[] as a Base64 string, which would break
-/// compatibility with the current Host's flat JSON number array.
-///
-/// A frame does not set power, global brightness, or color temperature. The
-/// Host can accept frames while Manual owns the lamp, but must not apply them
-/// without granting PC control. No command acknowledgment is implied.
-/// </remarks>
 public sealed class BridgeIpcFrameRequest
 {
-   internal BridgeIpcFrameRequest(IReadOnlyList<int> components, int count)
+   /// <summary>
+   /// Preserves the existing flat integer RGB sequence, never base64 byte[] JSON.
+   /// </summary>
+   internal BridgeIpcFrameRequest(IReadOnlyList<int> components, int count, string lampId)
    {
       Colors = Array.AsReadOnly(components.ToArray());
       Count = count;
+      ArgumentException.ThrowIfNullOrWhiteSpace(lampId);
+      LampId = lampId;
    }
 
-   /// <summary>The legacy frame message kind.</summary>
    [JsonPropertyName(BridgeIpcPropertyNames.Type)]
    public string Type => BridgeIpcMessageTypes.RgbFrame;
 
-   /// <summary>The number of logical RGB positions represented.</summary>
+   [JsonPropertyName(BridgeIpcPropertyNames.LampId)]
+   public string LampId { get; }
+
    [JsonPropertyName(BridgeIpcPropertyNames.Count)]
    public int Count { get; }
 
-   /// <summary>Flat RGB component sequence: R,G,B,R,G,B,...</summary>
    [JsonPropertyName(BridgeIpcPropertyNames.Colors)]
    public IReadOnlyList<int> Colors { get; }
 }

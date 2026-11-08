@@ -3,10 +3,12 @@
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const source = fs.readFileSync('GoveeBridge.js', 'utf8')
+const template = fs.readFileSync('GoveeBridge.js', 'utf8')
     .replace(/^import udp from "@SignalRGB\/udp";\s*/m, '')
     .replace(/^export /gm, '')
   + '\nglobalThis.api = { Name, Version, Type, DiscoveryService, Initialize, Render, Shutdown };';
+const source = template.replace('const LAMP_ID = "";', 'const LAMP_ID = "floor";');
+assert.notEqual(source, template, 'The test must configure its own explicit lamp ID');
 let registered = null;
 const frames = [];
 const channel = {
@@ -38,6 +40,18 @@ ctx.api.Initialize(); ctx.api.Render(); ctx.api.Shutdown();
 assert.equal(frames.length,1);
 const f = frames[0];
 assert.equal(f.ip,'127.0.0.1'); assert.equal(f.port,41005);
+assert.equal(JSON.parse(f.packet).lampId,'floor');
 assert.equal(JSON.parse(f.packet).count,8);
 assert.equal(JSON.parse(f.packet).colors.length,24);
+// The distributed add-on is deliberately unconfigured and must not send.
+let loggedMissingId = false;
+const unconfigured = {
+    ...ctx,
+    device: { ...ctx.device, log(message) { if (message.includes('configure LAMP_ID')) loggedMissingId = true; } },
+    udp: { createSocket() { throw Error('An unconfigured add-on must not open UDP'); } }
+};
+vm.runInNewContext(template, unconfigured, {filename:'GoveeBridge.js'});
+unconfigured.api.Initialize();
+unconfigured.api.Render();
+assert.ok(loggedMissingId, 'Missing lamp ID must be reported');
 console.log('SignalRGB JS mock checks passed (not a real SignalRGB integration test).');

@@ -1,10 +1,10 @@
 // GoveeBridge SignalRGB NETWORK ADD-ON (not a Lightscript).
-// This file intentionally has NO physical lamp address or Govee packet encoder.
-// SignalRGB -> sampled canvas colors -> loopback UDP -> .NET GoveeBridge service.
+// This add-on submits RGB frames to the Host. It intentionally does not
+// claim ownership or arm streaming; use the Host IPC to do that explicitly.
 import udp from "@SignalRGB/udp";
 
 export function Name() { return "GoveeBridge"; }
-export function Version() { return "0.2.0"; }
+export function Version() { return "0.3.0"; }
 export function Type() { return "network"; }
 export function Publisher() { return "Community development"; }
 export function Size() { return [1, 8]; }
@@ -12,10 +12,13 @@ export function SubdeviceController() { return true; }
 
 const DEVICE_ID = "goveebridge-h6072-local-v1";
 const CHANNEL = "Lamp RGB";
-const LED_LIMIT = 8;  // Logical LED positions, not H6072 physical pixel count.
+const LED_LIMIT = 8;
 const BRIDGE_HOST = "127.0.0.1";
 const BRIDGE_PORT = 41005;
-const MIN_FRAME_GAP_MS = 100;  // 10 fps to the bridge; the service limits physical writes.
+// REQUIRED: set this to a stable Bridge.Lamps[].Id, NOT an IP or MAC.
+// An unset/blank ID disables frame output; there is no implicit default.
+const LAMP_ID = "";
+const MIN_FRAME_GAP_MS = 100;
 let socket;
 let lastFrameAt = 0;
 let loggedSocketFailure = false;
@@ -25,7 +28,7 @@ class BridgeController {
         this.id = DEVICE_ID;
         this.name = "GoveeBridge (local)";
         this.sku = "H6072-BRIDGE";
-        this.ip = BRIDGE_HOST; // Address of local bridge; real lamp IP belongs only to C#.
+        this.ip = BRIDGE_HOST;
         this.paired = true;
         this.initialized = false;
     }
@@ -43,8 +46,6 @@ export function DiscoveryService() {
     this.registered = false;
     this.Initialize = function () { service.log("GoveeBridge: registering local virtual network device"); };
     this.Update = function () {
-        // Synthetic network-controller registration still requires testing on your version.
-        // Do not mark registered before the host accepts the controller.
         if (this.registered) return;
         try {
             let c = service.getController(DEVICE_ID);
@@ -52,7 +53,7 @@ export function DiscoveryService() {
                 service.addController(new BridgeController());
                 c = service.getController(DEVICE_ID);
             }
-            if (c === undefined) return; // retry on next Update()
+            if (c === undefined) return;
             c.paired = true;
             service.announceController(c);
             this.registered = true;
@@ -65,6 +66,11 @@ export function DiscoveryService() {
 }
 
 export function Initialize() {
+    if (typeof LAMP_ID !== "string" || !LAMP_ID.trim() ||
+        LAMP_ID !== LAMP_ID.trim() || LAMP_ID.length > 64) {
+        device.log("GoveeBridge: configure LAMP_ID to a stable Bridge.Lamps[].Id before sending frames.");
+        return;
+    }
     device.setName("Govee H6072 via GoveeBridge");
     device.addChannel(CHANNEL, LED_LIMIT);
     device.channel(CHANNEL).SetLedLimit(LED_LIMIT);
@@ -76,7 +82,7 @@ export function Initialize() {
             loggedSocketFailure = true;
         });
     }
-    device.log("GoveeBridge: channel Lamp RGB has 8 logical slots. Assign a generic component.");
+    device.log("GoveeBridge: send resume, then arm, through Host IPC before streaming.");
 }
 
 export function Render() {
@@ -88,9 +94,8 @@ export function Render() {
     const colors = channel.getColors("Inline", "RGB");
     if (!colors || colors.length < 3 || colors.length % 3 !== 0) return;
     lastFrameAt = now;
-    const packet = JSON.stringify({ type: "rgb-frame", count: colors.length / 3, colors });
-    // SignalRGB's addon UDP socket .write is NOT a browser fetch or Node.js socket.
-    socket.write(packet, BRIDGE_HOST, BRIDGE_PORT);
+    const message = { type: "rgb-frame", lampId: LAMP_ID, count: colors.length / 3, colors };
+    socket.write(JSON.stringify(message), BRIDGE_HOST, BRIDGE_PORT);
 }
 
 export function Shutdown() {

@@ -3,7 +3,7 @@
 .DESCRIPTION Requires neither the physical lamp nor a running GoveeBridge.Host. Uses a background PowerShell job to capture datagrams.
 #>
 [CmdletBinding()]
-param()
+param([Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $manifest = Join-Path $PSScriptRoot '..\GoveeHost.psd1'
@@ -25,12 +25,12 @@ foreach ($name in $functions) {
 }
 
 $rejected = $false
-try { Get-GoveeHostStatus -HostAddress '192.168.0.5' -TimeoutMs 100 | Out-Null }
+try { Get-GoveeHostStatus -LampId $LampId -HostAddress '192.168.0.5' -TimeoutMs 100 | Out-Null }
 catch { $rejected = $true }
 Assert-HostTest -Condition $rejected -Message 'Rejects nonloopback addresses'
 
 $rejected = $false
-try { Set-GoveeHostColor -Color '#WRONG!' -WhatIf | Out-Null }
+try { Set-GoveeHostColor -LampId $LampId -Color '#WRONG!' -WhatIf | Out-Null }
 catch { $rejected = $true }
 Assert-HostTest -Condition $rejected -Message 'Rejects invalid RGB colors'
 
@@ -67,22 +67,25 @@ $job = Start-Job -ArgumentList $port -ScriptBlock {
 
 try {
     Start-Sleep -Milliseconds 600
-    $result = Get-GoveeHostStatus -Port $port -TimeoutMs 2000
+    $result = Get-GoveeHostStatus -LampId $LampId -Port $port -TimeoutMs 2000
     Assert-HostTest -Condition ($result.echo -eq 'status') -Message 'Host status command round trip'
-    $result = Resume-GoveeHostControl -Port $port -TimeoutMs 2000
+    $result = Resume-GoveeHostControl -LampId $LampId -Port $port -TimeoutMs 2000
     Assert-HostTest -Condition ($result.echo -eq 'resume') -Message 'Resume command round trip'
-    $result = Set-GoveeHostBrightness -Brightness 65 -Port $port -TimeoutMs 2000
+    $result = Set-GoveeHostBrightness -LampId $LampId -BrightnessPercent 65 -Port $port -TimeoutMs 2000
     Assert-HostTest -Condition ($result.echo -eq 'set-brightness') -Message 'Brightness command round trip'
-    Set-GoveeHostColor -Color '#A1B2C3' -LogicalLedCount 2 -Port $port
-    $result = Release-GoveeHostControl -Port $port -TimeoutMs 2000
+    Send-GoveeHostSolidFrame -LampId $LampId -Color '#A1B2C3' -LogicalLedCount 2 -Port $port
+    $result = Release-GoveeHostControl -LampId $LampId -Port $port -TimeoutMs 2000
     Assert-HostTest -Condition ($result.echo -eq 'release') -Message 'Release command round trip'
 
     $finished = Wait-Job -Job $job -Timeout 8
     Assert-HostTest -Condition ($null -ne $finished) -Message 'Mock Host captured all five packets'
     $received = @(Receive-Job -Job $job -ErrorAction Stop)
     Assert-HostTest -Condition ($received.Count -eq 5) -Message 'Exactly five datagrams transmitted'
+    foreach ($message in $received) {
+        Assert-HostTest -Condition ((ConvertFrom-Json $message).lampId -eq $LampId) -Message 'Packet targets requested lamp'
+    }
     $brightness = ConvertFrom-Json -InputObject $received[2]
-    Assert-HostTest -Condition ($brightness.value -eq 65) -Message 'Brightness value serialized as 65'
+    Assert-HostTest -Condition ($brightness.data.brightnessPercent -eq 65) -Message 'Brightness value serialized as 65'
     $frame = ConvertFrom-Json -InputObject $received[3]
     Assert-HostTest -Condition ($frame.type -eq 'rgb-frame' -and $frame.count -eq 2) -Message 'RGB frame has correct type and count'
     Assert-HostTest -Condition ((@($frame.colors) -join ',') -eq '161,178,195,161,178,195') -Message 'RGB frame flattened in R/G/B order'

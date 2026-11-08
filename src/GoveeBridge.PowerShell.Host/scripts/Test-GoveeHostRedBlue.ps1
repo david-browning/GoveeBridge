@@ -7,6 +7,7 @@ Host's frame-staleness timeout is not accidentally triggered between color chang
 #>
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
     [ValidateRange(1, 3600)][int]$DurationSeconds = 60,
     [ValidateRange(1, 3600)][int]$IntervalSeconds = 5,
     [ValidateRange(50, 4000)][int]$FrameRefreshMs = 500,
@@ -15,6 +16,6 @@ param(
     [switch]$ReleaseOnExit
 )
 Import-Module -Name (Join-Path (Split-Path $PSScriptRoot -Parent) 'GoveeHost.psd1') -Force -ErrorAction Stop
-Start-GoveeHostAnimation -DurationSeconds $DurationSeconds -IntervalSeconds $IntervalSeconds `
+Start-GoveeHostAnimation -LampId $LampId -DurationSeconds $DurationSeconds -IntervalSeconds $IntervalSeconds `
     -FrameRefreshMs $FrameRefreshMs -LogicalLedCount $LogicalLedCount -Port $Port `
     -Resume -ReleaseOnExit:$ReleaseOnExit -Verbose:($VerbosePreference -eq 'Continue')

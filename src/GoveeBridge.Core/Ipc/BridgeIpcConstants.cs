@@ -1,62 +1,122 @@
 namespace GoveeBridge.Core.Ipc;
 
 /// <summary>
-/// JSON property names understood by GoveeBridge's application-facing IPC contract.
-/// These names belong to the bridge protocol, not to Govee's LAN protocol.
+/// JSON property names in Host application IPC, not in physical LAN packets.
 /// </summary>
 public static class BridgeIpcPropertyNames
 {
+   /// <summary>
+   /// Top-level message discriminator.
+   /// </summary>
    public const string Type = "type";
+   /// <summary>
+   /// Stable command action name.
+   /// </summary>
    public const string Action = "action";
+   /// <summary>
+   /// Optional command-specific payload object.
+   /// </summary>
    public const string Data = "data";
-
-   // Named fields for individual desired-state changes.
+   /// <summary>
+   /// Required configured stable lamp selector.
+   /// </summary>
+   public const string LampId = "lampId";
+   /// <summary>
+   /// Desired power state Boolean.
+   /// </summary>
    public const string IsOn = "isOn";
+   /// <summary>
+   /// Desired global brightness percentage.
+   /// </summary>
    public const string BrightnessPercent = "brightnessPercent";
+   /// <summary>
+   /// Desired white temperature in Kelvin.
+   /// </summary>
    public const string Kelvin = "kelvin";
+   /// <summary>
+   /// One desired solid RGB color.
+   /// </summary>
    public const string Color = "color";
+   /// <summary>
+   /// Red component.
+   /// </summary>
    public const string Red = "r";
+   /// <summary>
+   /// Green component.
+   /// </summary>
    public const string Green = "g";
+   /// <summary>
+   /// Blue component.
+   /// </summary>
    public const string Blue = "b";
-
-   // Legacy streaming-frame representation. Colors are flat RGB triplets.
+   /// <summary>
+   /// Number of RGB positions in a frame.
+   /// </summary>
    public const string Count = "count";
+   /// <summary>
+   /// Flat integer RGB triplets in a frame.
+   /// </summary>
    public const string Colors = "colors";
 }
 
 /// <summary>
-/// Top-level IPC message kinds. These are intentionally transport-independent:
-/// the same serialized message could travel over UDP loopback or a future pipe.
+/// Message kinds accepted by the Host IPC endpoint.
 /// </summary>
 public static class BridgeIpcMessageTypes
 {
-   /// <summary>A management request with an action and optional data payload.</summary>
-   public const string Command = "command";
-
    /// <summary>
-   /// A complete RGB frame. Kept separate from the management-command queue
-   /// because frames are time-sensitive and should use latest-frame-wins handling.
+   /// Management command with action and optional data.
+   /// </summary>
+   public const string Command = "command";
+   /// <summary>
+   /// Time-sensitive, complete RGB snapshot.
    /// </summary>
    public const string RgbFrame = "rgb-frame";
 }
 
 /// <summary>
-/// Actions accepted by the GoveeBridge Host's management IPC.
-/// These names are independent of the underlying Govee protocol.
+/// Stable action names understood by the Host's command dispatcher.
 /// </summary>
 public static class BridgeIpcActions
 {
-   // Queries
+   /// <summary>
+   /// Read cached per-lamp Host status.
+   /// </summary>
    public const string GetHostStatus = "status";
+   /// <summary>
+   /// Request a fresh physical lamp observation.
+   /// </summary>
    public const string GetLampStatus = "lamp-status";
-
-   // Control ownership
+   /// <summary>
+   /// Claim PC Direct control.
+   /// </summary>
    public const string Resume = "resume";
+   /// <summary>
+   /// Return to Manual control.
+   /// </summary>
    public const string Release = "release";
-
-   // Desired state changes
+   /// <summary>
+   /// Arm PC Streaming explicitly.
+   /// </summary>
+   public const string Arm = "arm";
+   /// <summary>
+   /// Disarm PC Streaming.
+   /// </summary>
+   public const string Disarm = "disarm";
+   /// <summary>
+   /// Change global power.
+   /// </summary>
    public const string SetPower = "set-power";
+   /// <summary>
+   /// Change global brightness.
+   /// </summary>
    public const string SetBrightness = "set-brightness";
+   /// <summary>
+   /// Request a solid RGB color.
+   /// </summary>
    public const string SetSolidColor = "set-color";
+   /// <summary>
+   /// Request white temperature.
+   /// </summary>
    public const string SetColorTemperature = "set-color-temperature";
 }

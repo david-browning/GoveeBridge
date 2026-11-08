@@ -1,117 +1,155 @@
-# GoveeBridge
+# GoveeBridge: three-mode control + manually configured multi-lamp foundation
 
-**GoveeBridge** is an experimental .NET 10 application that gives one background Host exclusive responsibility for communicating with a configured Govee lamp. Other local applications, including SignalRGB, send lighting data or control requests to the Host instead of opening competing connections to the lamp.
+**Baseline:** GitHub `david-browning/GoveeBridge`, branch `david/bridgeruntimerefactor`, commit `d66a87437c483ef901f5380075bd5ad75f7e5de8` (`Cleanup runtime command processing`). These are replacement/new files relative to that commit, **not a complete Git checkout**. Nothing has been pushed to GitHub.
 
-The initial target is the **Govee H6072**. The Host can poll its status and report changes through `ILogger`. The current lighting implementation supports whole-lamp RGB control through Govee's standard LAN API; individually addressable segments are not implemented.
+**Important:** This is a coordinated refactor that changes configuration, logical output semantics and one existing response field. Apply all the files together. Back up your uncommitted changes first; use Git diff/Visual Studio's compare if your branch has advanced. There is no .NET SDK or PowerShell runtime in this environment, so the package has **not been compiled or executed**. Offline structural/JSON checks only; build and run the tests locally before physical hardware testing.
 
-> **Project status:** Physical-lamp status monitoring has been exercised with an H6072. The SignalRGB network add-on and its virtual-device registration still require end-to-end testing. Local IPC is experimental and **not yet a secure, authenticated interface for arbitrary clients**. Do not expose it beyond the local machine.
+## Design
 
-## Design at a glance
+One Host process binds `127.0.0.1:41005` for management commands and frames. `BridgeWorker` owns IPC and timers. `BridgeRuntime` owns a `Dictionary<string,LampSession>` keyed by a stable, configured `lampId`. Each `LampSession` contains its own `SemaphoreSlim` state gate, frame mailbox, requested power, send/retry history, latest physical observation, and physical client. `GoveeLanNetwork` shares the one **UDP 4002** reply socket among all `GoveeLanClient` instances and routes status responses by source IP address. Discovery and IP-reconciliation are not implemented.
 
-    SignalRGB lighting canvas
-      -> GoveeBridge.js (SignalRGB network add-on)
-      -> localhost UDP 127.0.0.1:41005
-                                |
-    Other local programs -------+  (current local command interface)
-                                v
-                       GoveeBridge.Host
-                          |       |
-                     control   status polling -> ILogger
-                          |       |
-                          +--- GoveeLanClient
-                                      |
-                           Govee LAN UDP 4003
-                                      |
-                            Configured H6072
+`TransportMode` is removed. `Diagnostic` is now an independent Host setting. `ControlMode` is per lamp and means **Host-selected authority**, not hardware-confirmed state:
 
-* **One Host, one configured lamp.** The Host owns the lamp connection, status cache, and PC-versus-manual control policy. It can run interactively today and is structured as a Worker Service for eventual Windows Service deployment.
-* **SignalRGB is an adapter, not the lamp driver.** The JavaScript add-on captures logical LED colors and sends frames to the Host. It does not need the physical lamp's IP address or Govee's wire format.
-* **Monitoring is independent of control.** In real-lamp mode, the Host queries the lamp at startup and at a configured interval, even while manual control is active. Successful state changes and connectivity transitions are logged through `ILogger`.
-* **The physical remote retains startup priority.** The Host starts in Manual mode. It will not apply incoming lighting frames until PC control is explicitly resumed. Automatic release on observed remote power-off is best effort, not guaranteed remote-event detection.
-* **Future integrations require a secure control interface.** The current UDP listener accepts local frames and commands, but has no client authentication or Windows-user authorization. A protected management channel and status subscriptions remain planned work.
+- `Manual`: no unsolicited Host lighting output; only observation and control transitions.
+- `Pc`: direct commands; static RGB `set-color` retains bounded verification retries; no frames output.
+- `PcStreaming`: only Razer/multizone frame output plus global power/brightness; no direct RGB or temperature.
 
-## Repository layout
+Permission data is a static, immutable `FrozenDictionary<string,ModeMask>` in `BridgeRuntime.Commands.cs`, not a new command hierarchy. The table grants permission; handlers still check capability, payload and state-transition invariants.
 
-| Path                        | Responsibility                                                                                            |
-| --------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `src/GoveeBridge.Host/`     | Worker, local receiver, frame pump, status monitor, logger, control arbitration, and event-publisher stub |
-| `src/GoveeBridge.Protocol/` | Govee LAN UDP client, command identifiers, JSON payload DTOs, serialization, and status parsing           |
-| `src/GoveeBridge.Core/`     | Shared RGB/frame models, local frame validation, and Host configuration                                   |
-| `GoveeBridge.js`            | Experimental SignalRGB network add-on; registers a logical device and sends colors to the local Host      |
-| `GoveeBridge.qml`           | Optional SignalRGB add-on configuration view; **not** LED geometry or the lighting effect                 |
-| `tests/`                    | Initial smoke checks; a more complete automated suite is planned                                          |
-| `docs/architecture.md`      | Protocol boundaries, concurrency, ownership, security requirements, and roadmap                           |
+| Action | Manual | Pc | PcStreaming |
+|---|---|---|---|
+| `status` | Yes | Yes | Yes |
+| `lamp-status` | Yes* | Yes* | Yes* |
+| `resume` | → Pc | No-op | No-op |
+| `release` | No-op/retry DISARM | → Manual | → Manual |
+| `arm` | Reject | → PcStreaming | No-op |
+| `disarm` | No-op/retry DISARM | No-op/retry DISARM | → Pc |
+| `set-power` | Reject | Yes | Yes |
+| `set-brightness` | Reject | Yes | Yes |
+| `set-color` | Reject | Yes | Reject |
+| `set-color-temperature` | Reject | Yes | Reject |
+| `rgb-frame` physical output | No | No | Yes |
 
-## Requirements
+\* `lamp-status` may return an error when diagnostic, polling is prohibited while Razer is believed armed, or the device is unavailable. Unsuccessful physical sends are not acknowledgments.
 
-* Windows with the **.NET 10 SDK** or Visual Studio configured for .NET 10 development.
-* For physical-lamp monitoring: an H6072 on a reachable LAN with **LAN Control enabled** in Govee's application.
-* For lighting integration: SignalRGB with network add-on support. The synthetic device implementation in this repository is not yet verified against the installed SignalRGB version.
-* Disable competing Govee LAN integrations that attempt to bind the same UDP response port (notably the stock SignalRGB Govee integration and any enabled iCUE Govee integration).
+### Power intent and ARM/DISARM
 
-## Build and run
+- `resume` **only** selects `Pc` and clears stale frames; it no longer enables Razer implicitly.
+- `arm` requires `Pc`, configured `SupportsRealtime=true`, and no pending failed DISARM. It sends one physical ARM packet and enters `PcStreaming` after successful transport submission. It discards stale frames.
+- `set-power(false)` works in `Pc` and `PcStreaming`, suppresses any future automatic power-on, and discards old frames. Continued *incoming* frames can keep the streaming lease alive, but no frames are sent while explicitly off.
+- `set-power(true)` lifts the suppression. A new frame causes a new physical ARM submission if the lamp was power-cycled; Host bookkeeping cannot prove physical ARM succeeded.
+- `set-brightness(0)` maps to explicit power-off, because the physical `brightness` command supports only 1..100. Values 1..100 call the lamp brightness API normally.
+- `disarm` stops emitting frames before attempting the physical DISARM. An unsuccessful send leaves `razerArmed=true` even when the logical mode has returned to `Pc`; direct color/temperature are rejected until a successful DISARM retry.
+- `release` immediately enters `Manual`, clears frames and makes a best-effort physical DISARM without powering the lamp off. A failed DISARM remains retryable by `release`/`disarm` and blocks a new `resume` until resolved.
+- An idle streaming session is released after `FrameStaleAfterMs`, including a session with no frames after ARM. While explicitly off, incoming frames still refresh the lease but are not transmitted.
 
-From the repository root:
-    dotnet build GoveeBridge.sln
-    dotnet run --project src/GoveeBridge.Host
+## Manual configuration
 
-Alternatively, open `GoveeBridge.sln` in Visual Studio and launch **GoveeBridge.Host** as the startup project.
+The default `src/GoveeBridge.Host/appsettings.json` runs `Diagnostic=true` with no physical lamps (one implicit `diagnostic` session). For real hardware, set `Diagnostic=false` and configure **all lamps**. A two-device example is provided in `src/GoveeBridge.Host/appsettings.local.example.json`:
 
-### Diagnostic mode: no physical lamp access
-
-The committed `src/GoveeBridge.Host/appsettings.json` sets `Bridge:TransportMode` to `Diagnostic`. This is the safe default:
-
-* The Host binds its local IPC listener to `127.0.0.1:41005`.
-* It does **not** open the Govee status-response port or query/control a physical lamp.
-* When valid RGB frames arrive, it logs a representative averaged color (rate-limited diagnostic output).
-
-Diagnostic mode still needs a frame producer, such as the SignalRGB add-on, to show frame messages. Merely starting the Host produces startup logs, not simulated lamp power changes.
-
-### Real-lamp mode: monitor and optionally control the lamp
-
-Copy the example configuration to a machine-local override:
-    Copy-Item src/GoveeBridge.Host/appsettings.local.example.json src/GoveeBridge.Host/appsettings.local.json
-
-Edit `appsettings.local.json` and set `LampIp` to the actual lamp address. The JSON below uses a reserved documentation address as a placeholder; the checked-in example file may contain a different value:
-    {
-      "Bridge": {
-        "TransportMode": "GoveeStatic",
-        "LampIp": "192.0.2.5",
-        "RemotePollIntervalMs": 2000
+```json
+{
+  "Bridge": {
+    "Diagnostic": false,
+    "LogicalLedCount": 8,
+    "Lamps": [
+      {
+        "Id": "floor", "DeviceId": null, "Ip": "192.168.1.50",
+        "Capabilities": {
+          "SupportsPower": true, "SupportsBrightness": true,
+          "SupportsRgb": true, "SupportsColorTemperature": true,
+          "SupportsRealtime": true, "RealtimeZoneCount": 8
+        }
       },
-      "Host": {
-        "EnableLampMonitoring": true,
-        "LogLampStatusChanges": true
+      {
+        "Id": "desk", "DeviceId": null, "Ip": "192.168.1.51",
+        "Capabilities": { "SupportsRealtime": false }
       }
-    }
+    ]
+  }
+}
+```
 
-The local override is excluded by `.gitignore`. The Host loads it **after** the default settings, with the override resolved relative to `AppContext.BaseDirectory` (the executable/output directory). The Host project is configured to copy an existing `appsettings.local.json` to build and publish output. **Restart the Host after changing configuration**; reload-on-change is disabled.
+**Replace example IPs and capability claims with your actual device information.** `Id` is a stable operator alias for IPC; `DeviceId` is optional metadata for future discovery; the current `Ip` is not an identity and can change. Duplicate IDs and duplicate physical IPs are rejected. Unknown model support defaults `SupportsRealtime=false`, requiring explicit opt-in. `RealtimeZoneCount` should match actual logical Razer positions. `LogicalLedCount` is the maximum *incoming* frame width (up to 256); a Razer physical frame is limited to 255 positions.
 
-Start the Host. It should query the lamp immediately and continue polling at the selected interval. Turning the physical lamp on or off should produce `ILogger` messages when a changed status is observed. For example:
-    info: GoveeBridge.Host.BridgeRuntime[0]
-          Lamp online
-    info: GoveeBridge.Host.BridgeRuntime[0]
-          Lamp state changed: On=True, Brightness=75%, RGB=#FF8800, Kelvin=0 (...)
+**Migrate existing `appsettings.local.json`:** remove old `Bridge.TransportMode`/`Bridge.LampIp`, set `Bridge.Diagnostic=false`, and supply `Bridge.Lamps` explicitly. If the local file is not migrated, the new base configuration keeps Diagnostic enabled; no physical output will occur. If `appsettings.local.json` is untracked/local, do not overwrite it without merging these settings.
 
-This is illustrative output, not a recorded hardware trace. The Host logs **changes**, rather than printing every successful poll. Logging verbosity is controlled by the normal `Logging:LogLevel` settings; the console provider is active when running interactively. A future Windows Service deployment can use other `ILogger` providers.
+## PowerShell and SignalRGB
 
-Real mode does **not** automatically take PC control. Incoming frames are observed, but are not applied until the Host receives an explicit `resume` request. `release` stops further PC-controlled color writes without powering off the lamp. The current output path averages logical LEDs into a single RGB color and limits writes to the configured minimum interval (default **1000 ms**).
+The included `GoveeHost.psm1` and `.psd1` add `-LampId floor` to status/control/frame functions, and export `Arm-GoveeHostStreaming` / `Disarm-GoveeHostStreaming`. Use the newly compiled `GoveeBridge.Core.dll` with PowerShell 7.6+.
 
-## SignalRGB integration: next integration milestone
+```powershell
+Resume-GoveeHostControl -LampId floor
+Arm-GoveeHostStreaming -LampId floor
+Set-GoveeHostBrightness -BrightnessPercent 60 -LampId floor
+Send-GoveeHostSolidFrame -Color Red -LogicalLedCount 8 -LampId floor
+Set-GoveeHostPower -State Off -LampId floor
+Set-GoveeHostPower -State On -LampId floor
+Disarm-GoveeHostStreaming -LampId floor
+Set-GoveeHostColorTemperature -Kelvin 3500 -LampId floor
+Release-GoveeHostControl -LampId floor
+```
 
-The repository-root `GoveeBridge.js` is a **network add-on**, not a SignalRGB Lightscript. It is intended to register a virtual H6072 with **eight logical LED positions**, sample SignalRGB's lighting canvas, and transmit RGB frames to the Host over localhost UDP. The current intended installation route is **SignalRGB → Devices → Add-ons → Add** using this repository's public Git URL; the exact menu and synthetic registration behavior need verification on the installed version.
+The add-on's root `GoveeBridge.js` now has a `LAMP_ID` constant. Leave it null to use the configured default, or set it to a stable lamp Id for targeted frames. The add-on intentionally never sends `resume` or `arm`; manually enable streaming (or use the PowerShell animation helper with `-Resume`, which performs both operations explicitly). Its current single virtual-device geometry is not yet an automatic multi-lamp SignalRGB layout.
 
-The logical LEDs do **not** imply that the real H6072 exposes eight addressable LAN segments. In the present `GoveeStatic` mode they are averaged into one color. The optional `GoveeBridge.qml` provides an add-on view only; LED placement is configured through SignalRGB's channel/component layout.
+## Changes to apply
 
-**The add-on's synthetic controller registration has not yet been tested end to end.** The next milestone is to load the add-on, verify that the logical device appears in SignalRGB, assign a generic eight-LED component to the `Lamp RGB` channel, position it in SignalRGB Layout, and confirm that frame changes reach the Host in Diagnostic mode before attempting full-lamp control.
+**Replace existing files:**
 
-## Safety and known limitations
+- `src/GoveeBridge.Core/BridgeSettings.cs`
+- `src/GoveeBridge.Core/GoveeHelpers.cs`
+- `src/GoveeBridge.Core/Ipc/BridgeIpcConstants.cs`
+- `src/GoveeBridge.Core/Ipc/BridgeIpcDtos.cs`
+- `src/GoveeBridge.Core/Ipc/BridgeIpcRequests.cs`
+- `src/GoveeBridge.Core/Ipc/BridgeIpcResponses.cs`
+- `src/GoveeBridge.Host/BridgeEvents.cs`
+- `src/GoveeBridge.Host/BridgeRuntime.cs`
+- `src/GoveeBridge.Host/BridgeRuntime.Commands.cs`
+- `src/GoveeBridge.Host/BridgeRuntime.Monitoring.cs`
+- `src/GoveeBridge.Host/BridgeRuntime.Output.cs`
+- `src/GoveeBridge.Host/BridgeRuntime.State.cs`
+- `src/GoveeBridge.Host/BridgeWorker.cs`
+- `src/GoveeBridge.Host/appsettings.json`
+- `src/GoveeBridge.Protocol/GoveeLanClient.cs`
+- `src/GoveeBridge.PowerShell.Host/GoveeHost.psm1`
+- `src/GoveeBridge.PowerShell.Host/GoveeHost.psd1`
+- `tests/GoveeBridge.Host.Tests/BridgeCommandBoundaryTests.cs`
+- `GoveeBridge.js`, `GoveeBridge.qml`
 
-* **Localhost is not authentication.** Any local process capable of sending UDP to port `41005` can currently submit frames or supported commands. Do not treat the current IPC as a trusted public API. Secure, access-controlled management IPC is an explicit prerequisite for broader use or a persistent privileged service.
-* **No real-time multizone control yet.** Only standard whole-device LAN RGB control is implemented. High-rate or per-segment streaming requires separate protocol verification.
-* **Remote takeover is best effort.** Govee's standard status API is polled; it does not identify which actor changed a setting or provide dependable push notifications. An observed external power-off can release PC ownership, but short-lived changes and native scenes may not be detected. Color-mismatch takeover detection is experimental and disabled by default.
-* **One device per Host instance.** Multi-device discovery and coordination are outside the current design.
-* **No status event transport yet.** `IBridgeEventPublisher` and event types exist, but the registered implementation is a no-op. State changes are currently observable through `ILogger` and the Host's cached status responses.
-* **Windows Service hosting is not deployment.** The Host supports Windows Service integration, but must still be published, installed, and configured with appropriate permissions before running as a service.
+**Add these files:**
 
-See [Architecture](docs/architecture.md) for current IPC formats, scheduling and ownership behavior, the security-hardening plan, and planned testing.
+- `src/GoveeBridge.Core/ControlMode.cs`
+- `src/GoveeBridge.Core/LampCapabilities.cs`
+- `src/GoveeBridge.Core/BridgeLampSettings.cs`
+- `src/GoveeBridge.Protocol/GoveeLanNetwork.cs`
+- `src/GoveeBridge.Host/AssemblyInfo.cs` (exposes internal test constructor to Host.Tests)
+- `src/GoveeBridge.Host/appsettings.local.example.json`
+- `tests/GoveeBridge.Host.Tests/BridgeControlModeTests.cs`
+
+**Delete exactly this existing file:**
+
+- `src/GoveeBridge.Core/TransportModes.cs`
+
+No project file updates are needed for the standard SDK-style source includes. Keep your real `appsettings.local.json` private and migrate its values manually. The original commented-out `tests/GoveeBridge.Host.Tests/BridgeRuntimeTests.cs` is not compiled and need not be deleted, though it references the removed TransportMode in comments.
+
+## Known limits and follow-up work
+
+1. The **single Worker management-command FIFO** still processes management actions sequentially across lamps. Per-device gates separate physical state and allow independent frame/poll I/O, but a slow `lamp-status` in the Worker queue can delay another lamp's management command. Per-lamp command queues are a future scaling option, not implemented here.
+2. The periodic monitor/pump use `Task.WhenAll` over lamps; timing depends on the slowest outstanding attempt. No device discovery, dynamic IP updates, hot-plug, auto-retry of a new address, or LAN capability negotiation yet.
+3. Status messages have no request identifiers. The shared LAN receiver matches responses by source IP. A **late** status response could be mistaken for a newer query to that IP. Never interpret receipt as proof of control ownership.
+4. Capability flags are manually configured, not verified automatically. No Govee desktop compatibility checks or probing are included.
+5. The previous `GoveeStatic` **automatic per-frame average-color fallback** is intentionally gone. In PC Direct, send `set-color` explicitly; streaming means physical Razer frames only. A future explicit frame rendering/mapping strategy could add static fallback without reintroducing TransportMode.
+6. Host response JSON `mode` now means `ControlMode` (`Manual`, `Pc`, `PcStreaming`) rather than the removed configuration TransportMode. Added `lampId` and nullable `requestedPowerOn`; retained legacy `ownership` for compatibility.
+7. User-supplied IPC is loopback-only but not authenticated. Hardware arbitration against a remote remains heuristic: `devStatus` does not identify the actor that changed the lamp, and polling may be suppressed while Razer is armed.
+
+## Validation on Windows
+
+```powershell
+dotnet build .\GoveeBridge.sln
+dotnet test .\tests\GoveeBridge.IpcContractTests\GoveeBridge.IpcContractTests.csproj
+dotnet test .\tests\GoveeBridge.Host.Tests\GoveeBridge.Host.Tests.csproj
+```
+
+Then run Diagnostic mode and inspect status before enabling physical LAN access. With real lamps, test one lamp first, then two independently addressed lamps: resume/arm, brightness and power while streaming, disarm and color-temperature, release; confirm the remote can still override without the Host fighting it. Make sure no other process owns Govee's local UDP 4002 response port.
+
+**No GitHub writes were made.**
