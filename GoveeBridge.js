@@ -15,9 +15,9 @@ const CHANNEL = "Lamp RGB";
 const LED_LIMIT = 8;
 const BRIDGE_HOST = "127.0.0.1";
 const BRIDGE_PORT = 41005;
-// Leave null for single-lamp/default target. Set to the configured lamp Id
-// (NOT the device IP or MAC) when explicitly routing frames to another lamp.
-const LAMP_ID = null;
+// REQUIRED: set this to a stable Bridge.Lamps[].Id, NOT an IP or MAC.
+// An unset/blank ID disables frame output; there is no implicit default.
+const LAMP_ID = "";
 const MIN_FRAME_GAP_MS = 100;
 let socket;
 let lastFrameAt = 0;
@@ -66,6 +66,11 @@ export function DiscoveryService() {
 }
 
 export function Initialize() {
+    if (typeof LAMP_ID !== "string" || !LAMP_ID.trim() ||
+        LAMP_ID !== LAMP_ID.trim() || LAMP_ID.length > 64) {
+        device.log("GoveeBridge: configure LAMP_ID to a stable Bridge.Lamps[].Id before sending frames.");
+        return;
+    }
     device.setName("Govee H6072 via GoveeBridge");
     device.addChannel(CHANNEL, LED_LIMIT);
     device.channel(CHANNEL).SetLedLimit(LED_LIMIT);
@@ -89,8 +94,7 @@ export function Render() {
     const colors = channel.getColors("Inline", "RGB");
     if (!colors || colors.length < 3 || colors.length % 3 !== 0) return;
     lastFrameAt = now;
-    const message = { type: "rgb-frame", count: colors.length / 3, colors };
-    if (LAMP_ID !== null) message.lampId = LAMP_ID;
+    const message = { type: "rgb-frame", lampId: LAMP_ID, count: colors.length / 3, colors };
     socket.write(JSON.stringify(message), BRIDGE_HOST, BRIDGE_PORT);
 }
 

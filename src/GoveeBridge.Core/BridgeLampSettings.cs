@@ -12,7 +12,7 @@ public sealed class BridgeLampSettings
    /// <summary>
    /// Stable, unique operator-assigned name used in IPC requests and logs.
    /// </summary>
-   public string Id { get; set; } = "";
+   public required string Id { get; set; }
 
    /// <summary>
    /// Optional vendor device identifier for a future discovery registry.

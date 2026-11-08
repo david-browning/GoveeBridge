@@ -50,14 +50,10 @@ public sealed partial class BridgeRuntime : IDisposable
          clientFactory = lamp => new GoveeLanClient(_network, lamp.Ip, settings.LampTimeoutMs);
       }
 
-      IReadOnlyList<BridgeLampSettings> configured = settings.Lamps.Count == 0 && settings.Diagnostic
-         ? [new BridgeLampSettings { Id = "diagnostic" }]
-         : settings.Lamps;
-
       _lamps = new Dictionary<string, LampSession>(StringComparer.OrdinalIgnoreCase);
       try
       {
-         foreach (BridgeLampSettings entry in configured)
+         foreach (BridgeLampSettings entry in settings.Lamps)
          {
             IGoveeRealtimeClient? client = settings.Diagnostic ? null : clientFactory!(entry);
             _lamps.Add(entry.Id, new LampSession(entry, client));
@@ -125,17 +121,14 @@ public sealed partial class BridgeRuntime : IDisposable
          : Task.CompletedTask;
 
    /// <summary>
-   /// Chooses a configured lamp from its stable ID. For a
-   /// multi-lamp Host without a configured default, a selector is required.
+   /// Chooses a configured lamp from its required stable ID. No default
+   /// or implicit single-lamp selection is supported.
    /// </summary>
    private bool TrySelectLamp(string lampId, out LampSession? lamp)
    {
-      if (!_lamps.TryGetValue(lampId, out lamp))
-      {
-         return false;
-      }
-
-      return true;
+      lamp = null;
+      return !string.IsNullOrWhiteSpace(lampId) &&
+         _lamps.TryGetValue(lampId, out lamp);
    }
 
    /// <summary>

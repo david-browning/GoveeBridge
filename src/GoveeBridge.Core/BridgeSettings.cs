@@ -14,7 +14,7 @@ public sealed class BridgeSettings
    public bool Diagnostic { get; set; } = true;
 
    /// <summary>
-   /// Configured physical lamps. Diagnostic mode allows this collection to be empty.
+   /// Explicitly named lamps. At least one is required even in Diagnostic mode.
    /// </summary>
    public List<BridgeLampSettings> Lamps { get; set; } = [];
 
@@ -69,9 +69,9 @@ public sealed class BridgeSettings
       {
          throw new ArgumentException("Lamps collection cannot be null.");
       }
-      if (!Diagnostic && Lamps.Count == 0)
+      if (Lamps.Count == 0)
       {
-         throw new ArgumentException("Configure at least one lamp or enable Diagnostic.");
+         throw new ArgumentException("Configure at least one lamp with an explicit Id, including in Diagnostic mode.");
       }
 
       var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

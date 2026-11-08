@@ -8,11 +8,12 @@ namespace GoveeBridge.Core.Ipc;
 public sealed class BridgeIpcCommandRequest
 {
    /// <summary>
-   /// Constructs a command using the stable wire action and optional lamp target.
+   /// Constructs a command using the stable wire action and required lamp target.
    /// </summary>
    internal BridgeIpcCommandRequest(string action, string lampId)
    {
       Action = action;
+      ArgumentException.ThrowIfNullOrWhiteSpace(lampId);
       LampId = lampId;
    }
 
@@ -48,6 +49,7 @@ public sealed class BridgeIpcCommandRequest<TPayload> where TPayload : class
       ArgumentNullException.ThrowIfNull(data);
       Action = action;
       Data = data;
+      ArgumentException.ThrowIfNullOrWhiteSpace(lampId);
       LampId = lampId;
    }
 
@@ -127,7 +129,7 @@ public sealed class BridgeIpcColorPayload
 }
 
 /// <summary>
-/// One complete time-sensitive RGB frame, with an optional target-lamp selector.
+/// One complete time-sensitive RGB frame, with a required target-lamp selector.
 /// </summary>
 public sealed class BridgeIpcFrameRequest
 {
@@ -138,6 +140,7 @@ public sealed class BridgeIpcFrameRequest
    {
       Colors = Array.AsReadOnly(components.ToArray());
       Count = count;
+      ArgumentException.ThrowIfNullOrWhiteSpace(lampId);
       LampId = lampId;
    }
 

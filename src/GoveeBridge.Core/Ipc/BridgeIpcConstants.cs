@@ -18,7 +18,7 @@ public static class BridgeIpcPropertyNames
    /// </summary>
    public const string Data = "data";
    /// <summary>
-   /// Optional configured stable lamp selector.
+   /// Required configured stable lamp selector.
    /// </summary>
    public const string LampId = "lampId";
    /// <summary>

@@ -118,8 +118,8 @@ public sealed class BridgeWorker : BackgroundService
                packet.Buffer, _settings.LogicalLedCount,
                out RgbFrame? frame, out string? frameLampId))
             {
-               // No acknowledgment for frames. Unknown lamp IDs are dropped
-               // rather than accidentally broadcasting to every configured lamp.
+               // Valid frames always have an explicit lamp ID. Unknown IDs are
+               // dropped rather than accidentally broadcasting to every lamp.
                _runtime.ReceiveFrame(frame!, frameLampId);
                continue;
             }
@@ -194,19 +194,16 @@ public sealed class BridgeWorker : BackgroundService
                BridgeIpcPropertyNames.Data, out JsonElement value)
                ? value : null;
 
-            // A configured stable ID selects the lamp, never its mutable IP.
-            string? lampId = null;
-            if (root.TryGetProperty(BridgeIpcPropertyNames.LampId, out JsonElement selector))
+            // A stable lamp ID is mandatory on every command, including status.
+            if (!root.TryGetProperty(BridgeIpcPropertyNames.LampId, out JsonElement selector) ||
+               selector.ValueKind != JsonValueKind.String ||
+               string.IsNullOrWhiteSpace(selector.GetString()))
             {
-               if (selector.ValueKind != JsonValueKind.String ||
-                  string.IsNullOrWhiteSpace(selector.GetString()))
-               {
-                  await SendReplyAsync(udp, packet.RemoteEndPoint,
-                     new BridgeIpcErrorResponse("lampId must be a non-empty string"), ct);
-                  continue;
-               }
-               lampId = selector.GetString();
+               await SendReplyAsync(udp, packet.RemoteEndPoint,
+                  new BridgeIpcErrorResponse("lampId is required and must be a non-empty string"), ct);
+               continue;
             }
+            string lampId = selector.GetString()!;
 
             // JsonDocument remains alive across this await, so the optional
             // operation-specific payload remains readable until dispatch ends.

@@ -1,4 +1,6 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using GoveeBridge.Core.Ipc;
 
 namespace GoveeBridge.Core;
 
@@ -8,11 +10,11 @@ namespace GoveeBridge.Core;
 public static class GoveeHelpers
 {
    /// <summary>
-   /// Parses a complete frame and optional stable lampId in one JSON pass.
+   /// Parses a complete frame and required stable lampId in one JSON pass.
    /// Invalid frames do not reach the management-command queue as valid frames.
    /// </summary>
    public static bool TryParseFrame(ReadOnlySpan<byte> payload, int maxLeds,
-      out RgbFrame? frame, out string? lampId)
+      out RgbFrame? frame, [NotNullWhen(true)] out string? lampId)
    {
       frame = null;
       lampId = null;
@@ -27,15 +29,13 @@ public static class GoveeHelpers
             return false;
          }
 
-         if (root.TryGetProperty("lampId", out JsonElement selector))
+         if (!root.TryGetProperty(BridgeIpcPropertyNames.LampId, out JsonElement selector) ||
+            selector.ValueKind != JsonValueKind.String ||
+            string.IsNullOrWhiteSpace(selector.GetString()))
          {
-            if (selector.ValueKind != JsonValueKind.String ||
-               string.IsNullOrWhiteSpace(selector.GetString()))
-            {
-               return false;
-            }
-            lampId = selector.GetString();
+            return false;
          }
+         lampId = selector.GetString();
 
          int count = root.GetProperty("count").GetInt32();
          JsonElement values = root.GetProperty("colors");
