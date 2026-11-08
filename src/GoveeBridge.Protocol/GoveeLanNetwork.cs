@@ -98,6 +98,10 @@ public sealed class GoveeLanNetwork : IDisposable
             {
                pending.TrySetResult(status);
             }
+            else
+            {
+               // TODO: Rate-limited log of rejected packets.
+            }
          }
       }
       catch (OperationCanceledException) when (ct.IsCancellationRequested) { }

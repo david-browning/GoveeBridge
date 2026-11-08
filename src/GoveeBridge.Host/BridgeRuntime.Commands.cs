@@ -87,8 +87,11 @@ public sealed partial class BridgeRuntime
                DeserializePayload<BridgeIpcPowerPayload>(data).IsOn, ct),
             BridgeIpcActions.SetBrightness => await SetLampBrightnessUnsafeAsync(lamp,
                DeserializePayload<BridgeIpcBrightnessPayload>(data).BrightnessPercent, ct),
-            BridgeIpcActions.SetSolidColor => await SetLampColorUnsafeAsync(lamp,
-               DeserializePayload<BridgeIpcColorPayload>(data).Color, ct),
+            BridgeIpcActions.SetSolidColor => await SetLampColorUnsafeAsync(
+               lamp,
+               DeserializePayload<BridgeIpcColorPayload>(data).Color ?? 
+                  throw new JsonException("Color must be a non-null RGB object."),
+               ct),
             BridgeIpcActions.SetColorTemperature => await SetLampTemperatureUnsafeAsync(lamp,
                DeserializePayload<BridgeIpcColorTemperaturePayload>(data).Kelvin, ct),
             _ => new BridgeIpcErrorResponse($"Unknown command: {command}")

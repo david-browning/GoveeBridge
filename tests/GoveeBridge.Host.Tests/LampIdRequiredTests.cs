@@ -8,8 +8,11 @@ namespace GoveeBridge.Host.Tests;
 [TestClass]
 public sealed class LampIdRequiredTests
 {
-   private static readonly RgbFrame OnePixel = new([new RgbColor(1, 2, 3)]);
+   private static readonly RgbFrame _onePixel = new([new RgbColor(1, 2, 3)]);
 
+   /// <summary>
+   /// All IPC requests require a lamp Id.
+   /// </summary>
    [TestMethod]
    public void OutboundRequestsRequireARealLampId()
    {
@@ -25,12 +28,12 @@ public sealed class LampIdRequiredTests
          Assert.Throws<ArgumentException>(() => BridgeIpcRequests.SetBrightness(50, lampId!));
          Assert.Throws<ArgumentException>(() => BridgeIpcRequests.SetColor(new RgbColor(1, 2, 3), lampId!));
          Assert.Throws<ArgumentException>(() => BridgeIpcRequests.SetColorTemperature(3500, lampId!));
-         Assert.Throws<ArgumentException>(() => BridgeIpcRequests.SendFrame(OnePixel, lampId!));
+         Assert.Throws<ArgumentException>(() => BridgeIpcRequests.SendFrame(_onePixel, lampId!));
       }
 
       var request = BridgeIpcRequests.Status("floor");
       Assert.AreEqual("floor", request.LampId);
-      Assert.AreEqual("floor", BridgeIpcRequests.SendFrame(OnePixel, "floor").LampId);
+      Assert.AreEqual("floor", BridgeIpcRequests.SendFrame(_onePixel, "floor").LampId);
    }
 
    [TestMethod]
@@ -44,6 +47,7 @@ public sealed class LampIdRequiredTests
          """{"type":"rgb-frame","lampId":"  ","count":1,"colors":[1,2,3]}""",
          """{"type":"rgb-frame","lampId":12,"count":1,"colors":[1,2,3]}"""
       })
+
       {
          Assert.IsFalse(GoveeHelpers.TryParseFrame(Encoding.UTF8.GetBytes(packet),
             8, out _, out _));
@@ -66,6 +70,7 @@ public sealed class LampIdRequiredTests
          Diagnostic = true,
          Lamps = [new BridgeLampSettings { Id = "floor" }]
       };
+
       using var runtime = new BridgeRuntime(settings, new BridgeHostOptions(),
          new NullBridgeEventPublisher(), NullLogger<BridgeRuntime>.Instance);
 
@@ -75,8 +80,8 @@ public sealed class LampIdRequiredTests
       Assert.IsInstanceOfType<BridgeIpcErrorResponse>(
          await runtime.ExecuteCommandAsync(BridgeIpcActions.Resume,
             null, "", CancellationToken.None));
-      Assert.IsFalse(runtime.ReceiveFrame(OnePixel, null!));
-      Assert.IsFalse(runtime.ReceiveFrame(OnePixel, ""));
+      Assert.IsFalse(runtime.ReceiveFrame(_onePixel, null!));
+      Assert.IsFalse(runtime.ReceiveFrame(_onePixel, ""));
       Assert.IsInstanceOfType<BridgeHostStatusSnapshot>(
          await runtime.ExecuteCommandAsync(BridgeIpcActions.GetHostStatus,
             null, "floor", CancellationToken.None));

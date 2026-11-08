@@ -132,8 +132,8 @@ function New-GoveeHostRgbFrame {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][object[]]$Colors)
 
-    if ($Colors.Count -lt 1 -or $Colors.Count -gt 256) {
-        throw 'Frames must contain between 1 and 256 logical RGB positions.'
+    if ($Colors.Count -lt 1 -or $Colors.Count -gt 255) {
+        throw 'Frames must contain between 1 and 255 logical RGB positions.'
     }
     $values = [System.Collections.Generic.List[GoveeBridge.Core.RgbColor]]::new()
     foreach ($color in $Colors) {

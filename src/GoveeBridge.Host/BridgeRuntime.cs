@@ -79,17 +79,20 @@ public sealed partial class BridgeRuntime : IDisposable
    /// </summary>
    public bool ReceiveFrame(RgbFrame frame, string lampId)
    {
-      ArgumentNullException.ThrowIfNull(frame);
       if (!TrySelectLamp(lampId, out LampSession? lamp))
       {
          return false;
       }
 
+      ArgumentNullException.ThrowIfNull(frame);
+      int count = frame.Colors.Count;
       int? zones = lamp!.Settings.Capabilities.RealtimeZoneCount;
-      // The legacy IPC contract permits 256 entries; experimental Razer's
-      // physical count field is only one byte, so no lamp can stream 256.
-      if (frame.Colors.Count > byte.MaxValue ||
-         (zones is not null && zones != frame.Colors.Count))
+
+      if (count is < 1 or > byte.MaxValue ||
+          (zones is not null && count > zones))
+         // TODO: Determine whether Govee firmware accepts more frame colors
+         // than the lamp's physical lighting zones (e.g., by downsampling).
+         // If so, then count > zones may not be appropriate.
       {
          return false;
       }

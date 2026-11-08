@@ -5,8 +5,8 @@ public static class BridgeSettingsConstraints
    public const int MinimumFrameListenPort = 1024;
    public const int MaximumFrameListenPort = 65535;
 
-   public const int MinimumLogicalLedCount = 1;
-   public const int MaximumLogicalLedCount = 256;
+   public const int MinimumFrameColorCount = 1;
+   public const int MaximumFrameColorCount = byte.MaxValue;
 
    public const int MinimumSendIntervalMs = 100;
    public const int MaximumSendIntervalMs = 60000;

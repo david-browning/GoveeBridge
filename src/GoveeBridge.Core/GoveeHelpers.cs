@@ -43,7 +43,8 @@ public static class GoveeHelpers
 
          int count = root.GetProperty("count").GetInt32();
          JsonElement values = root.GetProperty("colors");
-         if (count < 1 || count > 256 || count > maxLeds ||
+         if (count < 1 || count > BridgeSettingsConstraints.MaximumFrameColorCount || 
+            count > maxLeds ||
             values.ValueKind != JsonValueKind.Array ||
             values.GetArrayLength() != count * 3)
          {

@@ -26,6 +26,7 @@ public sealed class BridgeSettings
    /// <summary>
    /// Maximum RGB positions accepted in a client frame. Each lamp can impose
    /// a stricter RealtimeZoneCount through its capability profile.
+   /// TODO: Check if we actually care about this?
    /// </summary>
    public int LogicalLedCount { get; set; } = BridgeSettingsDefaults.LogicalLedCount;
 
@@ -56,8 +57,6 @@ public sealed class BridgeSettings
    {
       Check(FrameListenPort, nameof(FrameListenPort),
          BridgeSettingsConstraints.MinimumFrameListenPort, BridgeSettingsConstraints.MaximumFrameListenPort);
-      Check(LogicalLedCount, nameof(LogicalLedCount),
-         BridgeSettingsConstraints.MinimumLogicalLedCount, BridgeSettingsConstraints.MaximumLogicalLedCount);
       Check(MinimumSendIntervalMs, nameof(MinimumSendIntervalMs),
          BridgeSettingsConstraints.MinimumSendIntervalMs, BridgeSettingsConstraints.MaximumSendIntervalMs);
       Check(RemotePollIntervalMs, nameof(RemotePollIntervalMs),

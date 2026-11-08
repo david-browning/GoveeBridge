@@ -88,9 +88,11 @@ public static class BridgeIpcRequests
    {
       ArgumentNullException.ThrowIfNull(frame);
       IReadOnlyList<RgbColor> colors = frame.Colors;
-      if (colors is null || colors.Count is < 1 or > 256)
+      if (colors is null ||
+             colors.Count is < 1 or > BridgeSettingsConstraints.MaximumFrameColorCount)
       {
-         throw new ArgumentException("A frame must contain 1 to 256 colors.", nameof(frame));
+         throw new ArgumentException(
+            $"A frame must contain 1 to {BridgeSettingsConstraints.MaximumFrameColorCount} colors.", nameof(frame));
       }
 
       int[] components = new int[colors.Count * 3];
@@ -102,6 +104,7 @@ public static class BridgeIpcRequests
          components[offset + 1] = color.G;
          components[offset + 2] = color.B;
       }
+
       return new BridgeIpcFrameRequest(components, colors.Count, lampId);
    }
 }
