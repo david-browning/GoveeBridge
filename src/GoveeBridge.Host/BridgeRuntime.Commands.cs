@@ -8,81 +8,58 @@ namespace GoveeBridge.Host;
 public sealed partial class BridgeRuntime
 {
    /// <summary>
-   /// Dispatches management commands. Each handler assumes _lampGate is already held;
-   /// frames use ReceiveFrame instead and never enter this management queue.
+   /// Executes one validated IPC command while serializing ownership and lamp I/O.
+   /// The Worker checks the JSON envelope; Runtime understands only the action
+   /// and the existing operation-specific Core payload DTOs.
    /// </summary>
+   /// <param name="command">An IPC action name, such as <see cref="BridgeIpcActions.SetPower"/>.</param>
+   /// <param name="data">The optional JSON payload. Parameterless actions omit it.</param>
+   /// <param name="ct">Cancels the command and acquisition of the lamp gate.</param>
    public async Task<BridgeIpcResponse> ExecuteCommandAsync(
-      JsonDocument buffer,
+      string command,
+      JsonElement? data,
       CancellationToken ct)
    {
-      JsonElement root = buffer.RootElement;
-
-      if (!root.TryGetProperty("type", out JsonElement type) || type.ValueKind != JsonValueKind.String || type.GetString() != "command" ||
-         !root.TryGetProperty("action", out JsonElement action) || action.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(action.GetString()))
+      if (string.IsNullOrWhiteSpace(command))
       {
-         return new BridgeIpcErrorResponse($"Invalid command packet");
+         return new BridgeIpcErrorResponse("Invalid command packet");
       }
 
-      var command = action.GetString();
-      ArgumentException.ThrowIfNullOrWhiteSpace(command);
-
-      JsonElement? data = root.TryGetProperty(
-         BridgeIpcPropertyNames.Data, out JsonElement value) ? value : null;
+      // Keep JSON envelope validation in BridgeWorker. Deserializing the small
+      // command-specific payload here avoids creating a parallel command model.
+      string action = command.Trim().ToLowerInvariant();
 
       await _lampGate.WaitAsync(ct);
       try
       {
-         switch (command.Trim().ToLowerInvariant())
+         return action switch
          {
-            case BridgeIpcActions.Resume:
-            {
-               return ResumeUnsafe();
-            }
-            case BridgeIpcActions.Release:
-            {
-               return await ReleaseCommandUnsafeAsync(ct);
-            }
-            case BridgeIpcActions.GetHostStatus:
-            {
-               return SnapshotUnsafe();
-            }
-            case BridgeIpcActions.GetLampStatus:
-            {
-               return await GetLampStatusUnsafeAsync(ct);
-            }
-            case BridgeIpcActions.SetPower:
-            {
-               var request = DeserializePayload<BridgeIpcPowerPayload>(data);
-               return await SetLampPowerUnsafeAsync(request.IsOn, ct);
-            }
-            case BridgeIpcActions.SetColorTemperature:
-            {
-               var request = DeserializePayload<BridgeIpcColorTemperaturePayload>(data);
-               return await SetLampTemperatureUnsafeAsync(request.Kelvin, ct);
-            }
-            case BridgeIpcActions.SetBrightness:
-            {
-               var request = DeserializePayload<BridgeIpcBrightnessPayload>(data);
-               return await SetLampBrightnessUnsafeAsync(request.BrightnessPercent, ct);
-            }
-            default:
-            {
-               return new BridgeIpcErrorResponse($"Unknown command: {command}");
-            }
-         }
+            BridgeIpcActions.Resume => ResumeUnsafe(),
+            BridgeIpcActions.Release => await ReleaseCommandUnsafeAsync(ct),
+            BridgeIpcActions.GetHostStatus => SnapshotUnsafe(),
+            BridgeIpcActions.GetLampStatus => await GetLampStatusUnsafeAsync(ct),
+            BridgeIpcActions.SetPower => await SetLampPowerUnsafeAsync(
+               DeserializePayload<BridgeIpcPowerPayload>(data).IsOn, ct),
+            BridgeIpcActions.SetColorTemperature => await SetLampTemperatureUnsafeAsync(
+               DeserializePayload<BridgeIpcColorTemperaturePayload>(data).Kelvin, ct),
+            BridgeIpcActions.SetBrightness => await SetLampBrightnessUnsafeAsync(
+               DeserializePayload<BridgeIpcBrightnessPayload>(data).BrightnessPercent, ct),
+            _ => new BridgeIpcErrorResponse($"Unknown command: {command}")
+         };
       }
       catch (OperationCanceledException) when (ct.IsCancellationRequested)
       {
+         // Host cancellation is not a malformed command or device failure.
          throw;
       }
       catch (Exception ex) when (ex is JsonException or ArgumentException)
       {
-         _log.LogWarning(ex, "Invalid IPC command payload.");
+         _log.LogWarning(ex, "Invalid IPC command payload");
          return new BridgeIpcErrorResponse(ex.Message);
       }
       catch (Exception ex)
       {
-         _log.LogError(ex, "Command execution failed.");
+         _log.LogError(ex, "Command execution failed");
          return new BridgeIpcErrorResponse(
             "An internal error occurred while processing the command.");
       }
@@ -92,18 +69,19 @@ public sealed partial class BridgeRuntime
       }
    }
 
+   /// <summary>
+   /// Deserializes an existing Core IPC DTO. Only commands with parameters call
+   /// this helper; resume, release, and status do not require a data object.
+   /// </summary>
    private static T DeserializePayload<T>(JsonElement? data) where T : class
    {
-      if (data is not JsonElement payload ||
-          payload.ValueKind != JsonValueKind.Object)
+      if (data is not JsonElement payload || payload.ValueKind != JsonValueKind.Object)
       {
-         throw new ArgumentException(
-            $"Missing or invalid payload for {typeof(T).Name}.");
+         throw new ArgumentException($"Missing or invalid payload for {typeof(T).Name}.");
       }
 
       return payload.Deserialize<T>()
-         ?? throw new JsonException(
-            $"Could not deserialize {typeof(T).Name}.");
+         ?? throw new JsonException($"Could not deserialize {typeof(T).Name}.");
    }
 
    /// <summary>
@@ -126,19 +104,17 @@ public sealed partial class BridgeRuntime
    /// <summary>
    /// Explicitly relinquishes control, then returns a typed runtime snapshot.
    /// </summary>
-   private async Task<BridgeHostStatusSnapshot> ReleaseCommandUnsafeAsync(
-      CancellationToken ct)
+   private async Task<BridgeHostStatusSnapshot> ReleaseCommandUnsafeAsync(CancellationToken ct)
    {
       await ReleaseUnsafeAsync("Explicit release", ct);
       return SnapshotUnsafe();
    }
 
    /// <summary>
-   /// Performs a fresh device query, distinct from GetHostStatus's cached snapshot.
-   /// Returns a typed error if polling would be unsupported or disruptive.
+   /// Performs a fresh physical status query rather than returning only the
+   /// cached snapshot. Razer streaming may intentionally suspend this query.
    /// </summary>
-   private async Task<BridgeIpcResponse> GetLampStatusUnsafeAsync(
-      CancellationToken ct)
+   private async Task<BridgeIpcResponse> GetLampStatusUnsafeAsync(CancellationToken ct)
    {
       if (_lamp is null)
       {
@@ -157,8 +133,8 @@ public sealed partial class BridgeRuntime
    }
 
    /// <summary>
-   /// Returns to Manual mode before attempting physical disarm, never powering off
-   /// or restoring a previous color (which could override the user's remote).
+   /// Returns control to Manual before attempting Razer disarm. Never powers
+   /// off or restores a previous color, so it does not fight the remote.
    /// </summary>
    private async Task ReleaseUnsafeAsync(string reason, CancellationToken ct)
    {
@@ -175,8 +151,8 @@ public sealed partial class BridgeRuntime
          PublishUnsafe(BridgeEventKind.ControlOwnershipChanged, reason);
       }
 
-      // Existing behavior retained: if this fails, the Razer armed flag is no
-      // longer held. Disarm/retry policy is a separate unresolved concern.
+      // Existing behavior preserved: a failed disarm is logged, but the armed
+      // flag was already cleared. Recovery is a separate policy decision.
       if (disarm && _lamp is not null)
       {
          try
@@ -191,45 +167,48 @@ public sealed partial class BridgeRuntime
       }
    }
 
+   /// <summary>
+   /// Requests power without implying physical acknowledgment.
+   /// </summary>
    private async Task<BridgeIpcResponse> SetLampPowerUnsafeAsync(
-      bool isOn,
+      bool isOn, 
       CancellationToken ct)
    {
-      var check = CheckLampReady();
-      if(check != null)
+      BridgeIpcErrorResponse? error = CheckPcLampAccessUnsafe();
+      if (error is not null)
       {
-         return check;
+         return error;
       }
 
       await _lamp!.SetPowerAsync(isOn, ct);
-
-      // This describes Host bookkeeping, not confirmation that
-      // the physical lamp applied the requested change.
       return SnapshotUnsafe();
    }
 
-   private async Task<BridgeIpcResponse> SetLampTemperatureUnsafeAsync(
-      int kelvin,
-      CancellationToken ct)
+   /// <summary>
+   /// Requests white-temperature mode without changing control ownership.
+   /// </summary>
+   private async Task<BridgeIpcResponse> SetLampTemperatureUnsafeAsync(int kelvin, CancellationToken ct)
    {
-      var check = CheckLampReady();
-      if (check != null)
+      BridgeIpcErrorResponse? error = CheckPcLampAccessUnsafe();
+      if (error is not null)
       {
-         return check;
+         return error;
       }
 
       await _lamp!.SetColorTemperatureAsync(kelvin, ct);
       return SnapshotUnsafe();
    }
 
-   private async Task<BridgeIpcResponse> SetLampBrightnessUnsafeAsync(
-      int percent,
-      CancellationToken ct)
+   /// <summary>
+   /// Requests device brightness. The physical client's range is 1..100;
+   /// zero-brightness mapping remains an explicit, unresolved Host policy.
+   /// </summary>
+   private async Task<BridgeIpcResponse> SetLampBrightnessUnsafeAsync(int percent, CancellationToken ct)
    {
-      var check = CheckLampReady();
-      if (check != null)
+      BridgeIpcErrorResponse? error = CheckPcLampAccessUnsafe();
+      if (error is not null)
       {
-         return check;
+         return error;
       }
 
       await _lamp!.SetBrightnessAsync(percent, ct);
@@ -237,11 +216,11 @@ public sealed partial class BridgeRuntime
    }
 
    /// <summary>
-   /// Returns null if the lamp is ready for a command. 
-   /// Otherwise returns the error that should be propagated up the host.
+   /// Guards all direct writes. Caller holds _lampGate; neither this method
+   /// nor individual command handlers should acquire the semaphore again.
+   /// Returns null only when PC owns an available physical lamp client.
    /// </summary>
-   /// <returns></returns>
-   private BridgeIpcErrorResponse? CheckLampReady()
+   private BridgeIpcErrorResponse? CheckPcLampAccessUnsafe()
    {
       if (_lamp is null)
       {
@@ -249,25 +228,21 @@ public sealed partial class BridgeRuntime
             "Diagnostic mode has no physical lamp connection");
       }
 
-      // Do not change the lamp unless PC control was granted.
       if (!_session.IsPcOwner)
       {
          return new BridgeIpcErrorResponse(
-            "PC control is required before changing lamp power.");
+            "PC control is required before changing the lamp.");
       }
 
       return null;
    }
 
    /// <summary>
-   /// Uses a separate timeout because the worker's cancellation token is already
-   /// cancelled by the time the Host attempts its final disarm.
+   /// Uses a separate timeout because the Worker's cancellation token is
+   /// already canceled by the time shutdown attempts its final disarm.
    /// </summary>
    public async Task ShutdownAsync()
    {
-      // The worker's cancellation token is already canceled at shutdown.
-      // Use a fresh, bounded token to permit one last disarm attempt rather
-      // than cancelling it immediately or delaying service shutdown forever.
       using CancellationTokenSource timeout = new(
          TimeSpan.FromMilliseconds(_settings.LampTimeoutMs));
 
