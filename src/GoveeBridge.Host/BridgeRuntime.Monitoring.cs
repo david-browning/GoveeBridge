@@ -1,41 +1,41 @@
-using System.Net.Sockets;
 using GoveeBridge.Core;
 using GoveeBridge.Core.Ipc;
-using GoveeBridge.Protocol;
 
 namespace GoveeBridge.Host;
 
 public sealed partial class BridgeRuntime
 {
    /// <summary>
-   /// Performs the common physical status request and observation pipeline.
-   /// Both periodic polling and the explicit lamp-status command use this path;
-   /// the caller must already hold _lampGate.
+   /// Updates this lamp's observation cache from a fresh physical status query.
+   /// Called by polling and lamp-status while the device gate is held.
    /// </summary>
-   private async Task<GoveeDeviceStatus?> RefreshLampObservationUnsafeAsync(CancellationToken ct)
+   private async Task<GoveeDeviceStatus?> RefreshLampObservationUnsafeAsync(LampSession lamp, CancellationToken ct)
    {
-      GoveeDeviceStatus? status = await _lamp!.GetStatusAsync(ct);
-      await ObserveStatusUnsafeAsync(status, ct);
+      GoveeDeviceStatus? status = await lamp.Client!.GetStatusAsync(ct);
+      await ObserveStatusUnsafeAsync(lamp, status, ct);
       return status;
    }
 
-   /// <summary>Updates connectivity, observation history, and remote-takeover evidence.</summary>
+   /// <summary>
+   /// Records physical observations and conservatively detects possible external
+   /// power/color overrides without conflating a timeout with an OFF state.
+   /// </summary>
    private async Task ObserveStatusUnsafeAsync(
-      GoveeDeviceStatus? status, CancellationToken ct)
+      LampSession lamp, GoveeDeviceStatus? status, CancellationToken ct)
    {
       // Timeout/no usable response is not an observed OFF state. It merely
       // means we don't currently have a fresh status; never infer takeover
       // from a missing response.
       if (status is null)
       {
-         UpdateConnectivityUnsafe(false);
+         UpdateConnectivityUnsafe(lamp, false);
          return;
       }
 
-      UpdateConnectivityUnsafe(true);
+      UpdateConnectivityUnsafe(lamp, true);
       // Preserve the old observation for change detection, and refresh the
       // timestamp EVEN IF all status fields are unchanged.
-      GoveeDeviceStatus? previous = _observed.Observe(status);
+      GoveeDeviceStatus? previous = lamp.Observed.Observe(status);
 
       if (previous != status)
       {
@@ -45,10 +45,10 @@ public sealed partial class BridgeRuntime
                "Observed lamp state: On={On}, Brightness={Brightness}%, RGB={Color}, Kelvin={Kelvin}",
                status.IsOn, status.Brightness, status.Color, status.ColorTemperatureKelvin);
          }
-         PublishUnsafe(BridgeEventKind.LampStatusChanged, "Observed via devStatus");
+         PublishUnsafe(lamp, BridgeEventKind.LampStatusChanged, "Observed via devStatus");
       }
 
-      if (_session.Owner != ControlOwner.Pc)
+      if (!lamp.Session.IsPcOwner)
       {
          return;
       }
@@ -58,43 +58,49 @@ public sealed partial class BridgeRuntime
       // an initial stale OFF reply as a remote power-off event.
       if (status.IsOn)
       {
-         _session.ObservedOnDuringOwnership = true;
+         lamp.Session.ObservedOnDuringOwnership = true;
       }
 
       // Firmware reports state, not WHO caused it. An OFF after an observed
       // ON is our strongest available signal of manual intervention. The
       // grace interval helps reject stale replies after our power-on send.
       if (_settings.AutoReleaseWhenRemoteTurnsOff && !status.IsOn &&
-         _session.ObservedOnDuringOwnership &&
-         DateTimeOffset.UtcNow - _attempts.LastPowerOnRequestedAt >=
+         lamp.Session.RequestedPowerOn != false &&
+         lamp.Session.ObservedOnDuringOwnership &&
+         DateTimeOffset.UtcNow - lamp.Attempts.LastPowerOnRequestedAt >=
             TimeSpan.FromMilliseconds(_options.RemotePowerOffGraceMs))
       {
-         await ReleaseUnsafeAsync("Observed external power-off", ct);
+         await ReleaseUnsafeAsync(lamp, "Observed external power-off", ct);
          return;
       }
 
-      if (_settings.TransportMode == TransportMode.GoveeStatic)
+      if (lamp.Session.Mode == ControlMode.Pc &&
+         lamp.Attempts.StaticColorRequest is not null)
       {
-         await ReconcileStaticColorUnsafeAsync(status, previous, ct);
+         await ReconcileStaticColorUnsafeAsync(lamp, status, previous, ct);
       }
    }
 
-   /// <summary>Reports whether the latest devStatus is fresh enough for best-effort checks.</summary>
-   private bool HasRecentStatusUnsafe()
+   /// <summary>
+   /// Reports whether devStatus is fresh enough for best-effort observation checks.
+   /// </summary>
+   private bool HasRecentStatusUnsafe(LampSession lamp)
    {
       // Freshness is a heuristic window, not a proof that nobody used the
       // remote after the query. Stale status must not suppress new commands.
-      return _observed.IsRecent(_settings);
+      return lamp.Observed.IsRecent(_settings);
    }
 
-   /// <summary>Raises online/offline transitions only when connectivity changes.</summary>
-   private void UpdateConnectivityUnsafe(bool online)
+   /// <summary>
+   /// Raises per-device online/offline events only after an observed transition.
+   /// </summary>
+   private void UpdateConnectivityUnsafe(LampSession lamp, bool online)
    {
-      if (_observed.Online == online)
+      if (lamp.Observed.Online == online)
       {
          return;
       }
-      _observed.Online = online;
+      lamp.Observed.Online = online;
       if (online)
       {
          _log.LogInformation("Lamp online");
@@ -103,29 +109,37 @@ public sealed partial class BridgeRuntime
       {
          _log.LogWarning("Lamp unreachable or status timed out");
       }
-      PublishUnsafe(online ? BridgeEventKind.LampOnline : BridgeEventKind.LampOffline,
+      PublishUnsafe(lamp, online ? BridgeEventKind.LampOnline : BridgeEventKind.LampOffline,
          online ? "online" : "offline");
    }
 
-   /// <summary>Publishes without performing synchronous I/O; caller holds _lampGate.</summary>
-   private void PublishUnsafe(BridgeEventKind kind, string details) =>
-      _events.Publish(new BridgeEvent(kind, DateTimeOffset.UtcNow, _observed.Status, details));
+   /// <summary>
+   /// Publishes an event for this lamp while its session gate is held.
+   /// </summary>
+   private void PublishUnsafe(LampSession lamp, BridgeEventKind kind, string details) =>
+      _events.Publish(new BridgeEvent(kind, DateTimeOffset.UtcNow,
+         lamp.Observed.Status, details, lamp.Settings.Id));
 
-   /// <summary>Creates a typed, immutable host snapshot with the existing JSON field names.</summary>
-   private BridgeHostStatusSnapshot SnapshotUnsafe() => new(
-      Mode: _settings.TransportMode.ToString(),
-      Ownership: _session.IsPcOwner ? "PC" : "Manual",
-      RazerArmed: _session.RealtimeArmed,
-      LampOnline: _observed.Online,
-      LampStatusObservedAt: _observed.ObservedAt,
-      LampStatusMayBeStale: _session.RealtimeArmed && !_options.PollWhileRealtimeArmed,
-      FramesReceived: _frames.ReceivedCount,
-      FramesSent: _attempts.FramesSent,
-      PowerCommandsSent: _attempts.PowerCommandsSent,
-      LastStaticColor: _attempts.StaticColorRequest?.Color.ToString(),
-      StaticVerified: _attempts.StaticColorRequest?.Verified,
-      StaticAttempts: _attempts.StaticColorRequest?.Attempts,
-      StaticRetryPending: _attempts.StaticColorRequest?.RetryPending,
-      StaticSuspended: _attempts.StaticColorRequest?.Suspended,
-      Lamp: _observed.Status);
+   /// <summary>
+   /// Creates a typed per-lamp snapshot. Mode now means Host ControlMode, not
+   /// the removed configuration TransportMode; lampId identifies the target.
+   /// </summary>
+   private BridgeHostStatusSnapshot SnapshotUnsafe(LampSession lamp) => new(
+      Mode: lamp.Session.Mode.ToString(),
+      Ownership: lamp.Session.IsPcOwner ? "PC" : "Manual",
+      RazerArmed: lamp.Session.RealtimeArmed,
+      LampOnline: lamp.Observed.Online,
+      LampStatusObservedAt: lamp.Observed.ObservedAt,
+      LampStatusMayBeStale: lamp.Session.RealtimeArmed && !_options.PollWhileRealtimeArmed,
+      FramesReceived: lamp.Frames.ReceivedCount,
+      FramesSent: lamp.Attempts.FramesSent,
+      PowerCommandsSent: lamp.Attempts.PowerCommandsSent,
+      LastStaticColor: lamp.Attempts.StaticColorRequest?.Color.ToString(),
+      StaticVerified: lamp.Attempts.StaticColorRequest?.Verified,
+      StaticAttempts: lamp.Attempts.StaticColorRequest?.Attempts,
+      StaticRetryPending: lamp.Attempts.StaticColorRequest?.RetryPending,
+      StaticSuspended: lamp.Attempts.StaticColorRequest?.Suspended,
+      Lamp: lamp.Observed.Status,
+      LampId: lamp.Settings.Id,
+      RequestedPowerOn: lamp.Session.RequestedPowerOn);
 }

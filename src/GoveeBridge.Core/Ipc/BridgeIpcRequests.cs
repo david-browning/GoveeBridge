@@ -1,96 +1,90 @@
 namespace GoveeBridge.Core.Ipc;
 
 /// <summary>
-/// Factory methods for the Host's supported and planned IPC request messages.
+/// Builds application-facing IPC requests without opening sockets or taking control.
 /// </summary>
-/// <remarks>
-/// These methods construct transport-independent DTOs. They do not open sockets,
-/// take control of the lamp, or guarantee that a Host implements a new command.
-/// Serialize a returned request with System.Text.Json before sending it.
-///
-/// Management commands use 'type=command' plus an action and optional data.
-/// RGB streaming uses 'type=rgb-frame', preserving the existing fast receive path.
-/// </remarks>
 public static class BridgeIpcRequests
 {
-   /// <summary>Requests the Host's cached status and ownership snapshot.</summary>
-   public static BridgeIpcCommandRequest Status() =>
-      new(BridgeIpcActions.GetHostStatus);
+   /// <summary>
+   /// Gets the selected lamp's cached Host state without polling the device.
+   /// </summary>
+   public static BridgeIpcCommandRequest Status(string lampId) =>
+      new(BridgeIpcActions.GetHostStatus, lampId);
 
    /// <summary>
-   /// Requests a physical lamp status observation through the Host, when
-   /// supported by the current operating mode. May time out or be unavailable.
+   /// Requests a new physical observation, when supported by the current mode.
    /// </summary>
-   public static BridgeIpcCommandRequest LampStatus() =>
-      new(BridgeIpcActions.GetLampStatus);
+   public static BridgeIpcCommandRequest LampStatus(string lampId) =>
+      new(BridgeIpcActions.GetLampStatus, lampId);
 
    /// <summary>
-   /// Asks the Host to grant PC control. The command does not itself set a color
-   /// and the caller must supply a fresh frame after ownership is granted.
+   /// Claims PC Direct control without replaying frames received in Manual mode.
    /// </summary>
-   public static BridgeIpcCommandRequest Resume() =>
-      new(BridgeIpcActions.Resume);
+   public static BridgeIpcCommandRequest Resume(string lampId) =>
+      new(BridgeIpcActions.Resume, lampId);
 
    /// <summary>
-   /// Asks the Host to return to manual control without intentionally powering
-   /// off or overwriting the lamp's appearance.
+   /// Releases Host authority and attempts to disarm experimental streaming.
    /// </summary>
-   public static BridgeIpcCommandRequest Release() =>
-      new(BridgeIpcActions.Release);
+   public static BridgeIpcCommandRequest Release(string lampId) =>
+      new(BridgeIpcActions.Release, lampId);
 
    /// <summary>
-   /// Requests a power change. The Host must enforce ownership rules before
-   /// touching hardware; this request does not implicitly claim ownership.
+   /// Requests transition from PC Direct to PC Streaming.
    /// </summary>
-   public static BridgeIpcCommandRequest<BridgeIpcPowerPayload> SetPower(bool isOn) =>
-      new(BridgeIpcActions.SetPower, new BridgeIpcPowerPayload { IsOn = isOn });
+   public static BridgeIpcCommandRequest Arm(string lampId) =>
+      new(BridgeIpcActions.Arm, lampId);
 
    /// <summary>
-   /// Requests a global brightness percentage independently of color.
+   /// Requests transition back to PC Direct, including disarm retry when needed.
    /// </summary>
-   /// <remarks>
-   /// Zero matches the domain LampState range (0..100), even though the Govee
-   /// LAN brightness command accepts only 1..100. Mapping zero is a Host policy
-   /// decision that must be specified before implementing dispatch.
-   /// </remarks>
+   public static BridgeIpcCommandRequest Disarm(string lampId) =>
+      new(BridgeIpcActions.Disarm, lampId);
+
+   /// <summary>
+   /// Requests an explicit power change in a PC-controlled mode.
+   /// </summary>
+   public static BridgeIpcCommandRequest<BridgeIpcPowerPayload> SetPower(
+      bool isOn, string lampId) =>
+      new(BridgeIpcActions.SetPower, new BridgeIpcPowerPayload { IsOn = isOn }, lampId);
+
+   /// <summary>
+   /// Requests brightness 0..100, with zero mapping to power off at Runtime.
+   /// </summary>
    public static BridgeIpcCommandRequest<BridgeIpcBrightnessPayload> SetBrightness(
-      int brightnessPercent)
+      int brightnessPercent, string lampId)
    {
       ArgumentOutOfRangeException.ThrowIfNegative(brightnessPercent);
       ArgumentOutOfRangeException.ThrowIfGreaterThan(brightnessPercent, 100);
       return new(BridgeIpcActions.SetBrightness,
-         new BridgeIpcBrightnessPayload { BrightnessPercent = brightnessPercent });
+         new BridgeIpcBrightnessPayload { BrightnessPercent = brightnessPercent }, lampId);
    }
 
    /// <summary>
-   /// Requests a static, solid RGB color. This differs from SendFrame: a color
-   /// change is a management request, not an expiring animation sample.
+   /// Requests a solid RGB color while in PC Direct mode.
    /// </summary>
-   public static BridgeIpcCommandRequest<BridgeIpcColorPayload> SetColor(RgbColor color) =>
+   public static BridgeIpcCommandRequest<BridgeIpcColorPayload> SetColor(
+      RgbColor color, string lampId) =>
       new(BridgeIpcActions.SetSolidColor, new BridgeIpcColorPayload
       {
          Color = new BridgeIpcRgbColor(color.R, color.G, color.B)
-      });
+      }, lampId);
 
    /// <summary>
-   /// Requests white-light color temperature. Any device-specific Kelvin bounds
-   /// must be validated by the Host and its selected device client.
+   /// Requests white temperature while in PC Direct mode.
    /// </summary>
-   public static BridgeIpcCommandRequest<BridgeIpcColorTemperaturePayload>
-      SetColorTemperature(int kelvin)
+   public static BridgeIpcCommandRequest<BridgeIpcColorTemperaturePayload> SetColorTemperature(
+      int kelvin, string lampId)
    {
       ArgumentOutOfRangeException.ThrowIfNegativeOrZero(kelvin);
       return new(BridgeIpcActions.SetColorTemperature,
-         new BridgeIpcColorTemperaturePayload { Kelvin = kelvin });
+         new BridgeIpcColorTemperaturePayload { Kelvin = kelvin }, lampId);
    }
 
    /// <summary>
-   /// Builds one complete RGB streaming frame, keeping the Host's existing
-   /// 'rgb-frame' wire representation and flattening RGB triplets in order.
+   /// Sends one complete frame to the selected lamp's latest-frame mailbox.
    /// </summary>
-   /// <param name="frame">The logical frame to send.</param>
-   /// <returns>A serializable frame message, not an applied lighting state.</returns>
-   public static BridgeIpcFrameRequest SendFrame(RgbFrame frame)
+   public static BridgeIpcFrameRequest SendFrame(RgbFrame frame, string lampId)
    {
       ArgumentNullException.ThrowIfNull(frame);
       IReadOnlyList<RgbColor> colors = frame.Colors;
@@ -108,7 +102,6 @@ public static class BridgeIpcRequests
          components[offset + 1] = color.G;
          components[offset + 2] = color.B;
       }
-
-      return new BridgeIpcFrameRequest(components, colors.Count);
+      return new BridgeIpcFrameRequest(components, colors.Count, lampId);
    }
 }

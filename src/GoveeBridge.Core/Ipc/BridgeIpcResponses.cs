@@ -1,5 +1,4 @@
 using System.Text.Json.Serialization;
-using GoveeBridge.Core;
 
 namespace GoveeBridge.Core.Ipc;
 
@@ -16,9 +15,19 @@ namespace GoveeBridge.Core.Ipc;
 public static class BridgeIpcResponsePropertyNames
 {
    /// <summary>
-   /// Configured output transport mode, such as Diagnostic, GoveeStatic, or GoveeRazer.
+   /// Current Host control mode: Manual, Pc, or PcStreaming.
    /// </summary>
    public const string Mode = "mode";
+
+   /// <summary>
+   /// Stable configured lamp selector for this response.
+   /// </summary>
+   public const string LampId = "lampId";
+
+   /// <summary>
+   /// Explicit requested power state, or null if no direct power request exists.
+   /// </summary>
+   public const string RequestedPowerOn = "requestedPowerOn";
 
    /// <summary>
    /// Logical control owner: PC or Manual; not a physical-device acknowledgment.
@@ -124,9 +133,8 @@ public abstract record BridgeIpcResponse;
 /// match the original anonymous-object response for client compatibility.
 /// </remarks>
 /// <param name="Mode">
-/// Configured <see cref="TransportMode"/> converted to its enum name: typically
-/// Diagnostic, GoveeStatic, or GoveeRazer. This is a configuration choice, not
-/// a status reported by the physical lamp.
+/// Host-selected <see cref="ControlMode"/> as its enum name: Manual, Pc, or PcStreaming.
+/// This is a control policy and not a hardware-observed mode.
 /// </param>
 /// <param name="Ownership">
 /// Current logical owner, "PC" or "Manual". Manual is the startup default;
@@ -135,8 +143,8 @@ public abstract record BridgeIpcResponse;
 /// </param>
 /// <param name="RazerArmed">
 /// True after the Host has submitted a Razer-arm request and has not yet cleared
-/// its arm bookkeeping. False does not prove a disarm reached the device; the
-/// existing release path clears this flag before sending disarm.
+/// its arm bookkeeping. Failed DISARM submissions retain this flag so the Host
+/// can retry; false still does not prove the lamp applied the DISARM packet.
 /// </param>
 /// <param name="LampOnline">
 /// True if the latest attempted devStatus poll returned a valid response; false
@@ -165,8 +173,8 @@ public abstract record BridgeIpcResponse;
 /// </param>
 /// <param name="PowerCommandsSent">
 /// Number of automatic power-on requests completed by the Host since startup.
-/// This currently counts the power-on path in frame output, not arbitrary
-/// future set-power management commands or physical state changes.
+/// This counts automatic power-on attempts in ARM/frame output, not explicit
+/// set-power management commands or verified physical state changes.
 /// </param>
 /// <param name="LastStaticColor">
 /// Color string (for example, "#FF0000") requested by the current static-color
@@ -180,7 +188,7 @@ public abstract record BridgeIpcResponse;
 /// describe all dynamic Govee scenes.
 /// </param>
 /// <param name="StaticAttempts">
-/// Number of completed SetColorAsync send attempts for the current static target.
+/// Number of completed SetColorAsync attempts for the current direct RGB target.
 /// Zero means no color send was needed or attempted; null means no active target.
 /// Each completed send is a transport attempt, not physical acknowledgment.
 /// </param>
@@ -200,6 +208,13 @@ public abstract record BridgeIpcResponse;
 /// is cached. The observation can be stale and does not expose the current
 /// animation frame or identify who last changed the lamp.
 /// </param>
+/// <param name="LampId">
+/// Stable configured lamp target associated with this per-device snapshot.
+/// </param>
+/// <param name="RequestedPowerOn">
+/// Explicit power request during the current session: true, false, or null
+/// when the Host has no explicit power intent. Not a hardware acknowledgment.
+/// </param>
 public sealed record BridgeHostStatusSnapshot(
    [property: JsonPropertyName(BridgeIpcResponsePropertyNames.Mode)] string Mode,
    [property: JsonPropertyName(BridgeIpcResponsePropertyNames.Ownership)] string Ownership,
@@ -215,7 +230,9 @@ public sealed record BridgeHostStatusSnapshot(
    [property: JsonPropertyName(BridgeIpcResponsePropertyNames.StaticAttempts)] int? StaticAttempts,
    [property: JsonPropertyName(BridgeIpcResponsePropertyNames.StaticRetryPending)] bool? StaticRetryPending,
    [property: JsonPropertyName(BridgeIpcResponsePropertyNames.StaticSuspended)] bool? StaticSuspended,
-   [property: JsonPropertyName(BridgeIpcResponsePropertyNames.Lamp)] GoveeDeviceStatus? Lamp
+   [property: JsonPropertyName(BridgeIpcResponsePropertyNames.Lamp)] GoveeDeviceStatus? Lamp,
+   [property: JsonPropertyName(BridgeIpcResponsePropertyNames.LampId)] string LampId,
+   [property: JsonPropertyName(BridgeIpcResponsePropertyNames.RequestedPowerOn)] bool? RequestedPowerOn = null
 ) : BridgeIpcResponse;
 
 /// <summary>

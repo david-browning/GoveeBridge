@@ -1,4 +1,3 @@
-using System.Net.Sockets;
 using GoveeBridge.Core;
 using GoveeBridge.Core.Ipc;
 using GoveeBridge.Protocol;
@@ -6,147 +5,283 @@ using GoveeBridge.Protocol;
 namespace GoveeBridge.Host;
 
 /// <summary>
-/// Serializes lamp ownership and physical I/O while accepting RGB frames through a
-/// separate latest-frame-wins mailbox. Manual ownership is the startup default.
+/// Owns independently controlled lamp sessions. The Worker owns IPC and timer
+/// cadence, while each session owns its state gate and physical-device policy.
 /// </summary>
 /// <remarks>
-/// A successful UDP send is only an attempted command, never hardware confirmation.
-/// Private methods suffixed Unsafe require _lampGate to be held by their caller.
+/// The Host has one shared UDP 4002 receiver and one control gate per lamp.
+/// Methods suffixed Unsafe require the target lamp's Gate to be held; no method
+/// acquires a second lamp's gate while holding the first.
 /// </remarks>
 public sealed partial class BridgeRuntime : IDisposable
 {
    /// <summary>
-   /// Creates the sole lamp client. Diagnostic mode does not bind the physical LAN port.
+   /// Creates configured lamp sessions with the shared physical LAN listener.
    /// </summary>
    public BridgeRuntime(
       BridgeSettings settings,
       BridgeHostOptions options,
       IBridgeEventPublisher events,
       ILogger<BridgeRuntime> log)
+      : this(settings, options, events, log, null)
    {
-      _settings = settings;
-      _options = options;
-      _events = events;
-      _log = log;
-
-      if (settings.TransportMode != TransportMode.Diagnostic)
-      {
-         _lamp = new GoveeLanClient(settings.LampIp!, settings.LampTimeoutMs);
-      }
-
-      _log.LogInformation("GoveeBridge mode={Mode}; owner=Manual", settings.TransportMode);
    }
 
    /// <summary>
-   /// Publishes a snapshot without awaiting the physical lamp; older frames are replaced.
-   /// This fast path deliberately does not acquire the device/ownership semaphore.
+   /// Allows tests to supply per-lamp clients without binding the physical
+   /// response port. Production uses the public four-argument constructor.
    /// </summary>
-   public void ReceiveFrame(RgbFrame frame)
+   internal BridgeRuntime(
+      BridgeSettings settings,
+      BridgeHostOptions options,
+      IBridgeEventPublisher events,
+      ILogger<BridgeRuntime> log,
+      Func<BridgeLampSettings, IGoveeRealtimeClient>? clientFactory)
+   {
+      _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+      _options = options ?? throw new ArgumentNullException(nameof(options));
+      _events = events ?? throw new ArgumentNullException(nameof(events));
+      _log = log ?? throw new ArgumentNullException(nameof(log));
+      settings.Validate();
+
+      if (!settings.Diagnostic && clientFactory is null)
+      {
+         _network = new GoveeLanNetwork();
+         clientFactory = lamp => new GoveeLanClient(_network, lamp.Ip, settings.LampTimeoutMs);
+      }
+
+      IReadOnlyList<BridgeLampSettings> configured = settings.Lamps.Count == 0 && settings.Diagnostic
+         ? [new BridgeLampSettings { Id = "diagnostic" }]
+         : settings.Lamps;
+
+      _lamps = new Dictionary<string, LampSession>(StringComparer.OrdinalIgnoreCase);
+      try
+      {
+         foreach (BridgeLampSettings entry in configured)
+         {
+            IGoveeRealtimeClient? client = settings.Diagnostic ? null : clientFactory!(entry);
+            _lamps.Add(entry.Id, new LampSession(entry, client));
+         }
+      }
+      catch
+      {
+         foreach (LampSession session in _lamps.Values)
+         {
+            session.Dispose();
+         }
+         _network?.Dispose();
+         throw;
+      }
+
+      _log.LogInformation(
+         "Bridge configured: Diagnostic={Diagnostic}, lamps={Count}",
+         settings.Diagnostic, _lamps.Count);
+   }
+
+   /// <summary>
+   /// Returns false for missing/unknown targets or mismatched configured zone
+   /// counts. Valid frames are copied into this lamp's latest-frame mailbox.
+   /// </summary>
+   public bool ReceiveFrame(RgbFrame frame, string lampId)
    {
       ArgumentNullException.ThrowIfNull(frame);
-      FrameReceipt receipt = _frames.Receive(frame, _lamp is null);
+      if (!TrySelectLamp(lampId, out LampSession? lamp))
+      {
+         return false;
+      }
+
+      int? zones = lamp!.Settings.Capabilities.RealtimeZoneCount;
+      // The legacy IPC contract permits 256 entries; experimental Razer's
+      // physical count field is only one byte, so no lamp can stream 256.
+      if (frame.Colors.Count > byte.MaxValue ||
+         (zones is not null && zones != frame.Colors.Count))
+      {
+         return false;
+      }
+      FrameReceipt receipt = lamp.Frames.Receive(frame, lamp.Client is null);
       if (receipt.LogDiagnostic)
       {
-         _log.LogInformation("Diagnostic frame #{Count}: {LedCount} positions, average {Color}",
-            receipt.ReceivedCount, receipt.Frame.Colors.Count, GoveeHelpers.AverageColor(receipt.Frame));
+         _log.LogInformation("Diagnostic lamp {LampId}: frame #{Count}, {Zones} positions, average {Color}",
+            lamp.Settings.Id, receipt.ReceivedCount, receipt.Frame.Colors.Count,
+            GoveeHelpers.AverageColor(receipt.Frame));
+      }
+      return true;
+   }
+
+   /// <summary>
+   /// Gives each lamp an independent output opportunity. No single global gate
+   /// can stall the other lamps' control state while physical I/O is in flight.
+   /// </summary>
+   public Task PumpFrameAsync(CancellationToken ct) =>
+      Task.WhenAll(_lamps.Values.Select(lamp => PumpLampAsync(lamp, ct)));
+
+   /// <summary>
+   /// Polls configured lamps independently, skipping physical queries when a
+   /// Razer ARM attempt makes devStatus unreliable.
+   /// </summary>
+   public Task PollLampAsync(CancellationToken ct) =>
+      _options.EnableLampMonitoring
+         ? Task.WhenAll(_lamps.Values.Select(lamp => PollLampUnsafeAsync(lamp, ct)))
+         : Task.CompletedTask;
+
+   /// <summary>
+   /// Chooses a configured lamp from its stable ID. For a
+   /// multi-lamp Host without a configured default, a selector is required.
+   /// </summary>
+   private bool TrySelectLamp(string lampId, out LampSession? lamp)
+   {
+      if (!_lamps.TryGetValue(lampId, out lamp))
+      {
+         return false;
+      }
+
+      return true;
+   }
+
+   /// <summary>
+   /// Periodic device status request under this lamp's gate.
+   /// </summary>
+   private async Task PollLampUnsafeAsync(LampSession lamp, CancellationToken ct)
+   {
+      if (lamp.Client is null)
+      {
+         return;
+      }
+      await lamp.Gate.WaitAsync(ct);
+      try
+      {
+         if (lamp.Session.RealtimeArmed && !_options.PollWhileRealtimeArmed)
+         {
+            return;
+         }
+         await RefreshLampObservationUnsafeAsync(lamp, ct);
+      }
+      finally
+      {
+         lamp.Gate.Release();
       }
    }
 
    /// <summary>
-   /// Samples the newest frame rather than queuing old animation states behind lamp I/O.
+   /// Outputs one current frame or one pending static-color retry according to
+   /// the selected control mode; never replays stale input from Manual mode.
    /// </summary>
-   public async Task PumpFrameAsync(CancellationToken ct)
+   private async Task PumpLampAsync(LampSession lamp, CancellationToken ct)
    {
-      if (_lamp is null || !await _lampGate.WaitAsync(0, ct))
+      if (lamp.Client is null || !await lamp.Gate.WaitAsync(0, ct))
       {
          return;
       }
-
       try
       {
-         if (!_session.IsPcOwner)
-         {
-            return;
-         }
-
-         FrameSnapshot pending = _frames.Snapshot();
-         if (pending.Frame is null)
-         {
-            return;
-         }
-
          DateTimeOffset now = DateTimeOffset.UtcNow;
-         if (now - pending.ReceivedAt > TimeSpan.FromMilliseconds(_options.FrameStaleAfterMs))
+         if (lamp.Session.Mode == ControlMode.Pc)
          {
-            await ReleaseUnsafeAsync("Frame stream expired", ct);
+            StaticColorRequest? retry = lamp.Attempts.StaticColorRequest;
+            if (retry is { NeedsSend: true } && lamp.Session.RequestedPowerOn != false)
+            {
+               await ApplyStaticColorUnsafeAsync(lamp, retry.Color, now, ct);
+            }
+            return;
+         }
+         if (lamp.Session.Mode != ControlMode.PcStreaming)
+         {
             return;
          }
 
-         switch (_settings.TransportMode)
+         FrameSnapshot pending = lamp.Frames.Snapshot();
+         DateTimeOffset lastActivity = pending.Frame is null
+            ? lamp.Session.StreamingBeganAt : pending.ReceivedAt;
+         if (now - lastActivity > TimeSpan.FromMilliseconds(_options.FrameStaleAfterMs))
          {
-            case TransportMode.GoveeStatic:
-            {
-               await ApplyStaticFrameUnsafeAsync(pending.Frame, now, ct);
-               break;
-            }
-            case TransportMode.GoveeRazer:
-            {
-               await ApplyRealtimeFrameUnsafeAsync(pending.Frame, now, ct);
-               break;
-            }
+            await ReleaseUnsafeAsync(lamp, "Frame stream expired", ct);
+            return;
          }
+         // A deliberate OFF pauses hardware output, not receipt of frames.
+         // New frames still keep the logical streaming session alive.
+         if (lamp.Session.RequestedPowerOn == false || pending.Frame is null)
+         {
+            return;
+         }
+         await ApplyRealtimeFrameUnsafeAsync(lamp, pending.Frame, now, ct);
       }
       finally
       {
-         _lampGate.Release();
+         lamp.Gate.Release();
       }
    }
 
    /// <summary>
-   /// Reads status without competing with a command or output. Does not poll while
-   /// streaming Razer by default because devStatus can be unavailable in that mode.
+   /// Makes bounded best-effort disarm attempts without using the Worker's
+   /// already-cancelled shutdown token.
    /// </summary>
-   public async Task PollLampAsync(CancellationToken ct)
-   {
-      if (_lamp is null || !_options.EnableLampMonitoring)
-      {
-         return;
-      }
+   public Task ShutdownAsync() =>
+      Task.WhenAll(_lamps.Values.Select(ShutdownLampAsync));
 
-      await _lampGate.WaitAsync(ct);
+   /// <summary>
+   /// Releases a single lamp independently of other lamps during shutdown.
+   /// </summary>
+   private async Task ShutdownLampAsync(LampSession lamp)
+   {
+      using CancellationTokenSource timeout = new(
+         TimeSpan.FromMilliseconds(_settings.LampTimeoutMs));
       try
       {
-         if (_session.RealtimeArmed && !_options.PollWhileRealtimeArmed)
+         await lamp.Gate.WaitAsync(timeout.Token);
+         try
          {
-            return;
+            await ReleaseUnsafeAsync(lamp, "Host stopping", timeout.Token);
          }
-
-         await RefreshLampObservationUnsafeAsync(ct);
+         finally
+         {
+            lamp.Gate.Release();
+         }
       }
-      finally
+      catch (OperationCanceledException)
       {
-         _lampGate.Release();
+         _log.LogWarning("Timed out releasing lamp {LampId} on shutdown", lamp.Settings.Id);
       }
    }
 
-   /// <summary>Disposes the network client and arbitration semaphore after Host shutdown.</summary>
+   /// <summary>
+   /// Disposes device clients before the single shared UDP response listener.
+   /// </summary>
    public void Dispose()
    {
-      _lamp?.Dispose();
-      _lampGate.Dispose();
+      foreach (LampSession lamp in _lamps.Values)
+      {
+         lamp.Dispose();
+      }
+      _network?.Dispose();
    }
 
+   /// <summary>
+   /// Deployment settings shared across lamp sessions.
+   /// </summary>
    private readonly BridgeSettings _settings;
-   private readonly BridgeHostOptions _options;
-   private readonly ILogger<BridgeRuntime> _log;
-   private readonly IBridgeEventPublisher _events;
-   private readonly IGoveeRealtimeClient? _lamp;
 
-   // Lock order: _lampGate, then briefly the mailbox lock (never the reverse).
-   // Everything in _session, _attempts and _observed is accessed under _lampGate.
-   private readonly SemaphoreSlim _lampGate = new(1, 1);
-   private readonly FrameMailbox _frames = new();
-   private readonly ControlSessionState _session = new();
-   private readonly OutputAttemptState _attempts = new();
-   private readonly LampObservationState _observed = new();
+   /// <summary>
+   /// Scheduling and arbitration options.
+   /// </summary>
+   private readonly BridgeHostOptions _options;
+
+   /// <summary>
+   /// Events for downstream diagnostics.
+   /// </summary>
+   private readonly IBridgeEventPublisher _events;
+
+   /// <summary>
+   /// Host logger for control transitions and physical attempts.
+   /// </summary>
+   private readonly ILogger<BridgeRuntime> _log;
+
+   /// <summary>
+   /// Stable lampId to independent state/gate/client mapping.
+   /// </summary>
+   private readonly Dictionary<string, LampSession> _lamps;
+
+   /// <summary>
+   /// One physical LAN response socket shared by all lamp clients.
+   /// </summary>
+   private readonly GoveeLanNetwork? _network;
 }

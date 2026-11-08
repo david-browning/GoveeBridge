@@ -11,6 +11,7 @@
         'ConvertTo-GoveeHostJson',
         'Get-GoveeHostStatus', 'Get-GoveeHostLampStatus',
         'Resume-GoveeHostControl', 'Release-GoveeHostControl',
+        'Arm-GoveeHostStreaming', 'Disarm-GoveeHostStreaming',
         'Set-GoveeHostPower', 'Set-GoveeHostBrightness',
         'Set-GoveeHostColor', 'Set-GoveeHostColorTemperature',
         'Send-GoveeHostFrame', 'Send-GoveeHostSolidFrame',

@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Net.Sockets;
 using System.Text.Json;
 using GoveeBridge.Core;
@@ -8,70 +9,131 @@ namespace GoveeBridge.Host;
 public sealed partial class BridgeRuntime
 {
    /// <summary>
-   /// Executes one validated IPC command while serializing ownership and lamp I/O.
-   /// The Worker checks the JSON envelope; Runtime understands only the action
-   /// and the existing operation-specific Core payload DTOs.
+   /// Mode permissions are immutable policy data, not a configurable file.
+   /// A permitted action may still fail a capability check or a physical send.
    /// </summary>
-   /// <param name="command">An IPC action name, such as <see cref="BridgeIpcActions.SetPower"/>.</param>
-   /// <param name="data">The optional JSON payload. Parameterless actions omit it.</param>
-   /// <param name="ct">Cancels the command and acquisition of the lamp gate.</param>
+   [Flags]
+   private enum ModeMask
+   {
+      None = 0,
+      Manual = 1,
+      Pc = 2,
+      PcStreaming = 4,
+      Owned = Pc | PcStreaming,
+      Any = Manual | Owned
+   }
+
+   /// <summary>
+   /// Central action-to-control-mode permission table. Mode transitions are
+   /// handled by methods, not hidden as mutations of the table.
+   /// </summary>
+   private static readonly FrozenDictionary<string, ModeMask> CommandPermissions =
+      new Dictionary<string, ModeMask>(StringComparer.OrdinalIgnoreCase)
+      {
+         [BridgeIpcActions.GetHostStatus] = ModeMask.Any,
+         [BridgeIpcActions.GetLampStatus] = ModeMask.Any,
+         [BridgeIpcActions.Resume] = ModeMask.Any,
+         [BridgeIpcActions.Release] = ModeMask.Any,
+         [BridgeIpcActions.Arm] = ModeMask.Owned,
+         [BridgeIpcActions.Disarm] = ModeMask.Any,
+         [BridgeIpcActions.SetPower] = ModeMask.Owned,
+         [BridgeIpcActions.SetBrightness] = ModeMask.Owned,
+         [BridgeIpcActions.SetSolidColor] = ModeMask.Pc,
+         [BridgeIpcActions.SetColorTemperature] = ModeMask.Pc
+      }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+
+   /// <summary>
+   /// Selects a lamp by configured stable identity, checks the central mode
+   /// policy, then executes one Core DTO payload under that lamp's state gate.
+   /// </summary>
    public async Task<BridgeIpcResponse> ExecuteCommandAsync(
-      string command,
-      JsonElement? data,
-      CancellationToken ct)
+      string command, JsonElement? data, string lampId, CancellationToken ct)
    {
       if (string.IsNullOrWhiteSpace(command))
       {
          return new BridgeIpcErrorResponse("Invalid command packet");
       }
+      if (!TrySelectLamp(lampId, out LampSession? lamp))
+      {
+         return new BridgeIpcErrorResponse($"No lamp exist named {lampId}");
+      }
 
-      // Keep JSON envelope validation in BridgeWorker. Deserializing the small
-      // command-specific payload here avoids creating a parallel command model.
       string action = command.Trim().ToLowerInvariant();
-
-      await _lampGate.WaitAsync(ct);
+      await lamp!.Gate.WaitAsync(ct);
       try
       {
+         if (!CommandPermissions.ContainsKey(action))
+         {
+            return new BridgeIpcErrorResponse($"Unknown command: {command}");
+         }
+         if (!IsCommandAllowedUnsafe(lamp, action))
+         {
+            return new BridgeIpcErrorResponse(
+               $"Command '{action}' is not permitted in {lamp.Session.Mode} mode.",
+               SnapshotUnsafe(lamp));
+         }
+
          return action switch
          {
-            BridgeIpcActions.Resume => ResumeUnsafe(),
-            BridgeIpcActions.Release => await ReleaseCommandUnsafeAsync(ct),
-            BridgeIpcActions.GetHostStatus => SnapshotUnsafe(),
-            BridgeIpcActions.GetLampStatus => await GetLampStatusUnsafeAsync(ct),
-            BridgeIpcActions.SetPower => await SetLampPowerUnsafeAsync(
+            BridgeIpcActions.GetHostStatus => SnapshotUnsafe(lamp),
+            BridgeIpcActions.GetLampStatus => await GetLampStatusUnsafeAsync(lamp, ct),
+            BridgeIpcActions.Resume => ResumeUnsafe(lamp),
+            BridgeIpcActions.Release => await ReleaseCommandUnsafeAsync(lamp, ct),
+            BridgeIpcActions.Arm => await ArmUnsafeAsync(lamp, ct),
+            BridgeIpcActions.Disarm => await DisarmCommandUnsafeAsync(lamp, ct),
+            BridgeIpcActions.SetPower => await SetLampPowerUnsafeAsync(lamp,
                DeserializePayload<BridgeIpcPowerPayload>(data).IsOn, ct),
-            BridgeIpcActions.SetColorTemperature => await SetLampTemperatureUnsafeAsync(
-               DeserializePayload<BridgeIpcColorTemperaturePayload>(data).Kelvin, ct),
-            BridgeIpcActions.SetBrightness => await SetLampBrightnessUnsafeAsync(
+            BridgeIpcActions.SetBrightness => await SetLampBrightnessUnsafeAsync(lamp,
                DeserializePayload<BridgeIpcBrightnessPayload>(data).BrightnessPercent, ct),
+            BridgeIpcActions.SetSolidColor => await SetLampColorUnsafeAsync(lamp,
+               DeserializePayload<BridgeIpcColorPayload>(data).Color, ct),
+            BridgeIpcActions.SetColorTemperature => await SetLampTemperatureUnsafeAsync(lamp,
+               DeserializePayload<BridgeIpcColorTemperaturePayload>(data).Kelvin, ct),
             _ => new BridgeIpcErrorResponse($"Unknown command: {command}")
          };
       }
       catch (OperationCanceledException) when (ct.IsCancellationRequested)
       {
-         // Host cancellation is not a malformed command or device failure.
          throw;
       }
       catch (Exception ex) when (ex is JsonException or ArgumentException)
       {
-         _log.LogWarning(ex, "Invalid IPC command payload");
+         _log.LogWarning(ex, "Invalid IPC payload for lamp {LampId}", lamp.Settings.Id);
          return new BridgeIpcErrorResponse(ex.Message);
       }
       catch (Exception ex)
       {
-         _log.LogError(ex, "Command execution failed");
-         return new BridgeIpcErrorResponse(
-            "An internal error occurred while processing the command.");
+         _log.LogError(ex, "Command {Action} failed for lamp {LampId}", action, lamp.Settings.Id);
+         return new BridgeIpcErrorResponse("A device or internal command error occurred.",
+            SnapshotUnsafe(lamp));
       }
       finally
       {
-         _lampGate.Release();
+         lamp.Gate.Release();
       }
    }
 
    /// <summary>
-   /// Deserializes an existing Core IPC DTO. Only commands with parameters call
-   /// this helper; resume, release, and status do not require a data object.
+   /// Evaluates the permission data against this lamp's current Host control mode.
+   /// </summary>
+   private static bool IsCommandAllowedUnsafe(LampSession lamp, string action)
+   {
+      if (!CommandPermissions.TryGetValue(action, out ModeMask supported))
+      {
+         return false;
+      }
+      ModeMask mode = lamp.Session.Mode switch
+      {
+         ControlMode.Manual => ModeMask.Manual,
+         ControlMode.Pc => ModeMask.Pc,
+         ControlMode.PcStreaming => ModeMask.PcStreaming,
+         _ => ModeMask.None
+      };
+      return (supported & mode) != ModeMask.None;
+   }
+
+   /// <summary>
+   /// Uses the existing Core IPC payload type; parameterless commands omit data.
    /// </summary>
    private static T DeserializePayload<T>(JsonElement? data) where T : class
    {
@@ -79,188 +141,286 @@ public sealed partial class BridgeRuntime
       {
          throw new ArgumentException($"Missing or invalid payload for {typeof(T).Name}.");
       }
-
-      return payload.Deserialize<T>()
-         ?? throw new JsonException($"Could not deserialize {typeof(T).Name}.");
+      return payload.Deserialize<T>() ??
+         throw new JsonException($"Could not deserialize {typeof(T).Name}.");
    }
 
    /// <summary>
-   /// Grants PC control without replaying a frame received in Manual mode.
+   /// Claims Direct PC control without replaying stale frames or bypassing an
+   /// unresolved Razer DISARM submission from an earlier session.
    /// </summary>
-   private BridgeHostStatusSnapshot ResumeUnsafe()
+   private BridgeIpcResponse ResumeUnsafe(LampSession lamp)
    {
-      if (!_session.IsPcOwner)
+      if (lamp.Session.Mode != ControlMode.Manual)
       {
-         _frames.Clear();
-         _session.BeginPcOwnership(HasRecentStatusUnsafe() && _observed.Status?.IsOn == true);
-         _attempts.ResetForNewSession();
-         _log.LogInformation("PC control granted by explicit resume command");
-         PublishUnsafe(BridgeEventKind.ControlOwnershipChanged, "PC");
+         return SnapshotUnsafe(lamp);
       }
-
-      return SnapshotUnsafe();
-   }
-
-   /// <summary>
-   /// Explicitly relinquishes control, then returns a typed runtime snapshot.
-   /// </summary>
-   private async Task<BridgeHostStatusSnapshot> ReleaseCommandUnsafeAsync(CancellationToken ct)
-   {
-      await ReleaseUnsafeAsync("Explicit release", ct);
-      return SnapshotUnsafe();
-   }
-
-   /// <summary>
-   /// Performs a fresh physical status query rather than returning only the
-   /// cached snapshot. Razer streaming may intentionally suspend this query.
-   /// </summary>
-   private async Task<BridgeIpcResponse> GetLampStatusUnsafeAsync(CancellationToken ct)
-   {
-      if (_lamp is null)
+      if (lamp.Session.RealtimeArmed)
       {
          return new BridgeIpcErrorResponse(
-            "Diagnostic mode has no physical lamp connection");
+            "Previous DISARM has not been submitted successfully. Retry disarm or release.",
+            SnapshotUnsafe(lamp));
       }
-
-      if (_session.RealtimeArmed && !_options.PollWhileRealtimeArmed)
-      {
-         return new BridgeIpcErrorResponse(
-            "devStatus is intentionally suspended while Razer mode is armed", SnapshotUnsafe());
-      }
-
-      GoveeDeviceStatus? status = await RefreshLampObservationUnsafeAsync(ct);
-      return new BridgeIpcLampStatusResponse(status, SnapshotUnsafe());
+      lamp.Frames.Clear();
+      lamp.Attempts.ResetForNewSession();
+      lamp.Session.BeginPcOwnership(HasRecentStatusUnsafe(lamp) && lamp.Observed.Status?.IsOn == true);
+      PublishUnsafe(lamp, BridgeEventKind.ControlOwnershipChanged, "PC");
+      return SnapshotUnsafe(lamp);
    }
 
    /// <summary>
-   /// Returns control to Manual before attempting Razer disarm. Never powers
-   /// off or restores a previous color, so it does not fight the remote.
+   /// Enters PC Streaming only with explicit capability support and after a
+   /// Razer ARM packet has been submitted. ARM cannot be inferred from a frame.
    /// </summary>
-   private async Task ReleaseUnsafeAsync(string reason, CancellationToken ct)
+   private async Task<BridgeIpcResponse> ArmUnsafeAsync(LampSession lamp, CancellationToken ct)
    {
-      bool changed = _session.IsPcOwner || _session.RealtimeArmed;
-      bool disarm = _session.RealtimeArmed;
+      if (lamp.Session.Mode == ControlMode.PcStreaming)
+      {
+         return SnapshotUnsafe(lamp);
+      }
+      BridgeIpcErrorResponse? error = CheckCapabilityUnsafe(lamp,
+         lamp.Settings.Capabilities.SupportsRealtime, "Razer real-time streaming");
+      if (error is not null)
+      {
+         return error;
+      }
+      if (lamp.Session.RealtimeArmed)
+      {
+         return new BridgeIpcErrorResponse(
+            "A previous DISARM remains unresolved; retry disarm first.", SnapshotUnsafe(lamp));
+      }
+      if (lamp.Session.RequestedPowerOn == false)
+      {
+         return new BridgeIpcErrorResponse("Turn the lamp on before arming streaming.");
+      }
 
-      _session.Release();
-      _attempts.ResetOnRelease();
-      _frames.Clear();
+      await EnsurePoweredOnUnsafeAsync(lamp, ct);
+      await lamp.Client!.SetRealtimeEnabledAsync(true, ct);
+      lamp.Session.BeginStreaming();
+      lamp.Attempts.ClearStaticTarget();
+      lamp.Attempts.ClearRealtimeHistory();
+      lamp.Frames.Clear();
+      lamp.Session.ResetColorMismatch();
+      _log.LogInformation("Lamp {LampId} entered PC Streaming (ARM submitted)", lamp.Settings.Id);
+      PublishUnsafe(lamp, BridgeEventKind.ControlOwnershipChanged, "PC Streaming");
+      if (_options.RealtimeArmDelayMs > 0)
+      {
+         await Task.Delay(_options.RealtimeArmDelayMs, ct);
+      }
+      return SnapshotUnsafe(lamp);
+   }
 
+   /// <summary>
+   /// Stops sending frames before attempting physical DISARM. Failed DISARM
+   /// remains visible as RealtimeArmed and can be retried explicitly.
+   /// </summary>
+   private async Task<BridgeIpcResponse> DisarmCommandUnsafeAsync(LampSession lamp, CancellationToken ct)
+   {
+      bool changed = lamp.Session.Mode == ControlMode.PcStreaming;
+      lamp.Session.StopStreaming();
+      lamp.Attempts.ClearRealtimeHistory();
+      lamp.Frames.Clear();
+      if (lamp.Session.RealtimeArmed)
+      {
+         if (lamp.Client is null)
+         {
+            return new BridgeIpcErrorResponse("Diagnostic mode has no physical DISARM connection.");
+         }
+         await lamp.Client.SetRealtimeEnabledAsync(false, ct);
+         lamp.Session.RecordDisarmSent();
+      }
       if (changed)
       {
-         _log.LogInformation("Manual ownership: {Reason}", reason);
-         PublishUnsafe(BridgeEventKind.ControlOwnershipChanged, reason);
+         PublishUnsafe(lamp, BridgeEventKind.ControlOwnershipChanged, "PC Direct");
       }
+      return SnapshotUnsafe(lamp);
+   }
 
-      // Existing behavior preserved: a failed disarm is logged, but the armed
-      // flag was already cleared. Recovery is a separate policy decision.
-      if (disarm && _lamp is not null)
+   /// <summary>
+   /// Explicitly relinquishes Host ownership and attempts physical DISARM.
+   /// </summary>
+   private async Task<BridgeHostStatusSnapshot> ReleaseCommandUnsafeAsync(
+      LampSession lamp, CancellationToken ct)
+   {
+      await ReleaseUnsafeAsync(lamp, "Explicit release", ct);
+      return SnapshotUnsafe(lamp);
+   }
+
+   /// <summary>
+   /// Returns to Manual first and makes a best-effort physical DISARM. The
+   /// RealtimeArmed flag remains set if the send fails, so it can be retried.
+   /// </summary>
+   private async Task ReleaseUnsafeAsync(LampSession lamp, string reason, CancellationToken ct)
+   {
+      bool changed = lamp.Session.Mode != ControlMode.Manual;
+      lamp.Session.Release();
+      lamp.Attempts.ResetOnRelease();
+      lamp.Frames.Clear();
+      if (changed)
+      {
+         PublishUnsafe(lamp, BridgeEventKind.ControlOwnershipChanged, reason);
+      }
+      if (lamp.Session.RealtimeArmed && lamp.Client is not null)
       {
          try
          {
-            await _lamp.SetRealtimeEnabledAsync(false, ct);
-            _log.LogInformation("Razer mode disarm requested");
+            await lamp.Client.SetRealtimeEnabledAsync(false, ct);
+            lamp.Session.RecordDisarmSent();
          }
          catch (Exception ex) when (ex is SocketException or IOException or OperationCanceledException)
          {
-            _log.LogWarning(ex, "Razer disarm failed: physical mode may still be armed");
+            _log.LogWarning(ex, "Lamp {LampId}: DISARM failed; retry is still required", lamp.Settings.Id);
          }
       }
    }
 
    /// <summary>
-   /// Requests power without implying physical acknowledgment.
+   /// Queries this device independently of cached Host status; physical
+   /// devStatus may be intentionally disabled while Razer is armed.
+   /// </summary>
+   private async Task<BridgeIpcResponse> GetLampStatusUnsafeAsync(LampSession lamp, CancellationToken ct)
+   {
+      if (lamp.Client is null)
+      {
+         return new BridgeIpcErrorResponse("Diagnostic mode has no physical lamp connection");
+      }
+      if (lamp.Session.RealtimeArmed && !_options.PollWhileRealtimeArmed)
+      {
+         return new BridgeIpcErrorResponse(
+            "devStatus is suspended while Razer may be armed", SnapshotUnsafe(lamp));
+      }
+      GoveeDeviceStatus? status = await RefreshLampObservationUnsafeAsync(lamp, ct);
+      return new BridgeIpcLampStatusResponse(status, SnapshotUnsafe(lamp));
+   }
+
+   /// <summary>
+   /// Sets power in either PC mode. Explicit OFF suppresses frame output and
+   /// implicit power-on, while the next ON requires a fresh stream frame.
    /// </summary>
    private async Task<BridgeIpcResponse> SetLampPowerUnsafeAsync(
-      bool isOn, 
-      CancellationToken ct)
+      LampSession lamp, bool isOn, CancellationToken ct)
    {
-      BridgeIpcErrorResponse? error = CheckPcLampAccessUnsafe();
+      BridgeIpcErrorResponse? error = CheckCapabilityUnsafe(lamp,
+         lamp.Settings.Capabilities.SupportsPower, "power");
       if (error is not null)
       {
          return error;
       }
-
-      await _lamp!.SetPowerAsync(isOn, ct);
-      return SnapshotUnsafe();
+      await lamp.Client!.SetPowerAsync(isOn, ct);
+      lamp.Session.SetPowerIntent(isOn);
+      if (isOn)
+      {
+         lamp.Attempts.RecordExplicitPowerOn();
+      }
+      else
+      {
+         lamp.Attempts.ClearPowerOnRequest();
+         lamp.Attempts.ClearStaticTarget();
+         lamp.Attempts.ClearRealtimeHistory();
+         lamp.Frames.Clear();
+      }
+      return SnapshotUnsafe(lamp);
    }
 
    /// <summary>
-   /// Requests white-temperature mode without changing control ownership.
+   /// Sets global brightness in either PC mode. Zero maps to explicit power
+   /// OFF because Govee's physical brightness command accepts only 1..100.
    /// </summary>
-   private async Task<BridgeIpcResponse> SetLampTemperatureUnsafeAsync(int kelvin, CancellationToken ct)
+   private async Task<BridgeIpcResponse> SetLampBrightnessUnsafeAsync(
+      LampSession lamp, int percent, CancellationToken ct)
    {
-      BridgeIpcErrorResponse? error = CheckPcLampAccessUnsafe();
+      BridgeIpcErrorResponse? error = CheckCapabilityUnsafe(lamp,
+         lamp.Settings.Capabilities.SupportsBrightness, "brightness");
       if (error is not null)
       {
          return error;
       }
-
-      await _lamp!.SetColorTemperatureAsync(kelvin, ct);
-      return SnapshotUnsafe();
+      if (percent is < 0 or > 100)
+      {
+         return new BridgeIpcErrorResponse("Brightness must be 0..100.");
+      }
+      if (percent == 0)
+      {
+         return await SetLampPowerUnsafeAsync(lamp, false, ct);
+      }
+      await lamp.Client!.SetBrightnessAsync(percent, ct);
+      return SnapshotUnsafe(lamp);
    }
 
    /// <summary>
-   /// Requests device brightness. The physical client's range is 1..100;
-   /// zero-brightness mapping remains an explicit, unresolved Host policy.
+   /// Requests a discrete solid color using the existing bounded, observed
+   /// static-color retry pipeline. Streaming mode is disallowed by policy.
    /// </summary>
-   private async Task<BridgeIpcResponse> SetLampBrightnessUnsafeAsync(int percent, CancellationToken ct)
+   private async Task<BridgeIpcResponse> SetLampColorUnsafeAsync(
+      LampSession lamp, BridgeIpcRgbColor rgb, CancellationToken ct)
    {
-      BridgeIpcErrorResponse? error = CheckPcLampAccessUnsafe();
+      BridgeIpcErrorResponse? error = CheckDirectCapabilityUnsafe(lamp,
+         lamp.Settings.Capabilities.SupportsRgb, "solid RGB");
       if (error is not null)
       {
          return error;
       }
-
-      await _lamp!.SetBrightnessAsync(percent, ct);
-      return SnapshotUnsafe();
+      if (lamp.Session.RequestedPowerOn == false)
+      {
+         return new BridgeIpcErrorResponse("Turn the lamp on before setting its color.");
+      }
+      RgbColor color = new(rgb.R, rgb.G, rgb.B);
+      await ApplyStaticColorUnsafeAsync(lamp, color, DateTimeOffset.UtcNow, ct);
+      return SnapshotUnsafe(lamp);
    }
 
    /// <summary>
-   /// Guards all direct writes. Caller holds _lampGate; neither this method
-   /// nor individual command handlers should acquire the semaphore again.
-   /// Returns null only when PC owns an available physical lamp client.
+   /// Requests white color temperature and cancels any older static RGB retry.
    /// </summary>
-   private BridgeIpcErrorResponse? CheckPcLampAccessUnsafe()
+   private async Task<BridgeIpcResponse> SetLampTemperatureUnsafeAsync(
+      LampSession lamp, int kelvin, CancellationToken ct)
    {
-      if (_lamp is null)
+      BridgeIpcErrorResponse? error = CheckDirectCapabilityUnsafe(lamp,
+         lamp.Settings.Capabilities.SupportsColorTemperature, "color temperature");
+      if (error is not null)
       {
-         return new BridgeIpcErrorResponse(
-            "Diagnostic mode has no physical lamp connection");
+         return error;
       }
-
-      if (!_session.IsPcOwner)
+      if (lamp.Session.RequestedPowerOn == false)
       {
-         return new BridgeIpcErrorResponse(
-            "PC control is required before changing the lamp.");
+         return new BridgeIpcErrorResponse("Turn the lamp on before setting white temperature.");
       }
-
-      return null;
+      if (kelvin <= 0)
+      {
+         return new BridgeIpcErrorResponse("Kelvin must be positive.");
+      }
+      await lamp.Client!.SetColorTemperatureAsync(kelvin, ct);
+      lamp.Attempts.ClearStaticTarget();
+      lamp.Session.ResetColorMismatch();
+      return SnapshotUnsafe(lamp);
    }
 
    /// <summary>
-   /// Uses a separate timeout because the Worker's cancellation token is
-   /// already canceled by the time shutdown attempts its final disarm.
+   /// Checks physical connection and configured support without inferring that
+   /// the device acknowledged a previous request.
    /// </summary>
-   public async Task ShutdownAsync()
+   private static BridgeIpcErrorResponse? CheckCapabilityUnsafe(
+      LampSession lamp, bool supported, string feature)
    {
-      using CancellationTokenSource timeout = new(
-         TimeSpan.FromMilliseconds(_settings.LampTimeoutMs));
+      if (lamp.Client is null)
+      {
+         return new BridgeIpcErrorResponse("Diagnostic mode has no physical lamp connection");
+      }
+      return supported ? null : new BridgeIpcErrorResponse(
+         $"Lamp '{lamp.Settings.Id}' does not have configured {feature} support.");
+   }
 
-      try
+   /// <summary>
+   /// Blocks direct color/temperature changes after a failed DISARM even when
+   /// the logical mode has already returned to PC Direct.
+   /// </summary>
+   private static BridgeIpcErrorResponse? CheckDirectCapabilityUnsafe(
+      LampSession lamp, bool supported, string feature)
+   {
+      if (lamp.Session.RealtimeArmed)
       {
-         await _lampGate.WaitAsync(timeout.Token);
-         try
-         {
-            await ReleaseUnsafeAsync("Host stopping", timeout.Token);
-         }
-         finally
-         {
-            _lampGate.Release();
-         }
+         return new BridgeIpcErrorResponse("DISARM has not been submitted successfully.");
       }
-      catch (OperationCanceledException)
-      {
-         _log.LogWarning("Timed out while releasing the lamp during shutdown");
-      }
+      return CheckCapabilityUnsafe(lamp, supported, feature);
    }
 }

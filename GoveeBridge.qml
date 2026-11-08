@@ -1,7 +1,6 @@
 import QtQuick
 
-// Add-on management UI, NOT the lamp's LED geometry or canvas placement.
-// LED geometry comes from device.addChannel() + component/layout configuration.
+// Add-on management UI; physical device configuration lives in the .NET Host.
 Item {
     anchors.fill: parent
     Column {
@@ -17,14 +16,14 @@ Item {
             font.pixelSize: 14
         }
         Text {
-            text: "Configure the physical lamp IP in the service's private appsettings.local.json."
+            text: "Configure physical lamps under Bridge:Lamps in appsettings.local.json."
             color: "#cccccc"
             font.pixelSize: 13
             wrapMode: Text.WordWrap
             width: parent.width
         }
         Text {
-            text: "Use the GoveeBridge.Cli app to query status, release, or resume PC control."
+            text: "Use PowerShell: Resume-GoveeHostControl, then Arm-GoveeHostStreaming. Frames do not auto-arm."
             color: "#cccccc"
             font.pixelSize: 13
             wrapMode: Text.WordWrap

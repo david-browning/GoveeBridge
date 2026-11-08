@@ -18,13 +18,29 @@ namespace GoveeBridge.Host;
 /// </remarks>
 public sealed class BridgeWorker : BackgroundService
 {
-   // DI supplies one Runtime shared by these concurrent loops. The Worker
-   // owns IPC/timing; the Runtime owns mutable device-control state.
+   /// <summary>
+   /// Host input settings and maximum incoming frame width.
+   /// </summary>
    private readonly BridgeSettings _settings;
+
+   /// <summary>
+   /// Scheduling and monitoring cadence.
+   /// </summary>
    private readonly BridgeHostOptions _options;
+
+   /// <summary>
+   /// Independent lamp sessions and their control policies.
+   /// </summary>
    private readonly BridgeRuntime _runtime;
+
+   /// <summary>
+   /// Logs IPC transport faults without attributing them to device state.
+   /// </summary>
    private readonly ILogger<BridgeWorker> _log;
 
+   /// <summary>
+   /// Creates the one loopback IPC worker shared by all configured lamps.
+   /// </summary>
    public BridgeWorker(
       BridgeSettings settings,
       BridgeHostOptions options,
@@ -37,8 +53,10 @@ public sealed class BridgeWorker : BackgroundService
       _log = log;
    }
 
-   // As a BackgroundService, ExecuteAsync is started by .NET's generic Host.
-   // It owns the loopback socket and the lifetimes of its helper tasks.
+   /// <summary>
+   /// Runs the fast UDP receive loop and its independent pump, monitor, and
+   /// bounded management consumer until shutdown is requested.
+   /// </summary>
    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
    {
       // This is local IPC, not the physical Govee LAN socket or its reply port.
@@ -97,9 +115,12 @@ public sealed class BridgeWorker : BackgroundService
             }
 
             if (GoveeHelpers.TryParseFrame(
-               packet.Buffer, _settings.LogicalLedCount, out RgbFrame? frame))
+               packet.Buffer, _settings.LogicalLedCount,
+               out RgbFrame? frame, out string? frameLampId))
             {
-               _runtime.ReceiveFrame(frame!);
+               // No acknowledgment for frames. Unknown lamp IDs are dropped
+               // rather than accidentally broadcasting to every configured lamp.
+               _runtime.ReceiveFrame(frame!, frameLampId);
                continue;
             }
 
@@ -173,10 +194,24 @@ public sealed class BridgeWorker : BackgroundService
                BridgeIpcPropertyNames.Data, out JsonElement value)
                ? value : null;
 
-            // JsonDocument stays alive across this await, so the optional
-            // JsonElement is valid until Runtime finishes consuming it.
+            // A configured stable ID selects the lamp, never its mutable IP.
+            string? lampId = null;
+            if (root.TryGetProperty(BridgeIpcPropertyNames.LampId, out JsonElement selector))
+            {
+               if (selector.ValueKind != JsonValueKind.String ||
+                  string.IsNullOrWhiteSpace(selector.GetString()))
+               {
+                  await SendReplyAsync(udp, packet.RemoteEndPoint,
+                     new BridgeIpcErrorResponse("lampId must be a non-empty string"), ct);
+                  continue;
+               }
+               lampId = selector.GetString();
+            }
+
+            // JsonDocument remains alive across this await, so the optional
+            // operation-specific payload remains readable until dispatch ends.
             BridgeIpcResponse reply = await _runtime.ExecuteCommandAsync(
-               action.GetString()!, data, ct);
+               action.GetString()!, data, lampId, ct);
             await SendReplyAsync(udp, packet.RemoteEndPoint, reply, ct);
          }
          catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -196,6 +231,9 @@ public sealed class BridgeWorker : BackgroundService
       }
    }
 
+   /// <summary>
+   /// Submits one best-effort UDP response to the command sender's source port.
+   /// </summary>
    private static async Task SendReplyAsync(
       UdpClient udp, IPEndPoint endpoint, object payload, CancellationToken ct)
    {
@@ -205,7 +243,9 @@ public sealed class BridgeWorker : BackgroundService
       await udp.SendAsync(bytes.AsMemory(), endpoint, ct);
    }
 
-   /// <summary>Poll immediately, then at the configured cadence.</summary>
+   /// <summary>
+   /// Starts one observation attempt immediately and subsequent timed polls.
+   /// </summary>
    private async Task MonitorLampAsync(CancellationToken ct)
    {
       await TryPollAsync(ct);
@@ -216,6 +256,9 @@ public sealed class BridgeWorker : BackgroundService
       }
    }
 
+   /// <summary>
+   /// Isolates expected device-query faults from the long-lived worker loop.
+   /// </summary>
    private async Task TryPollAsync(CancellationToken ct)
    {
       try

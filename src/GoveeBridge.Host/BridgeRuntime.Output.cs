@@ -1,26 +1,23 @@
-using System.Net.Sockets;
 using GoveeBridge.Core;
-using GoveeBridge.Core.Ipc;
-using GoveeBridge.Protocol;
 
 namespace GoveeBridge.Host;
 
 public sealed partial class BridgeRuntime
 {
    /// <summary>
-   /// Applies a static RGB target, with bounded verification retries when enabled.
+   /// Applies a discrete static RGB request with bounded verification retries.
+   /// The PC Direct pump may call this again only for an existing pending target.
    /// </summary>
-   private async Task ApplyStaticFrameUnsafeAsync(
-      RgbFrame frame, DateTimeOffset now, CancellationToken ct)
+   private async Task ApplyStaticColorUnsafeAsync(
+      LampSession lamp, RgbColor wanted, DateTimeOffset now, CancellationToken ct)
    {
-      RgbColor wanted = GoveeHelpers.AverageColor(frame);
 
       // A new requested color replaces the previous reconciliation attempt.
       // This matters when SignalRGB is animating: never retry an obsolete color.
-      StaticColorRequest request = _attempts.GetStaticTarget(wanted, out bool targetChanged);
+      StaticColorRequest request = lamp.Attempts.GetStaticTarget(wanted, out bool targetChanged);
       if (targetChanged)
       {
-         _session.ResetColorMismatch();
+         lamp.Session.ResetColorMismatch();
       }
 
       // A verified color needs no repeats. A suspended request has either
@@ -32,15 +29,15 @@ public sealed partial class BridgeRuntime
       }
 
       // Respect the physical LAN rate limit for BOTH first attempts and retries.
-      if (!_attempts.CanSendStatic(now, _settings.MinimumSendIntervalMs))
+      if (!lamp.Attempts.CanSendStatic(now, _settings.MinimumSendIntervalMs))
       {
          return;
       }
 
       // If the lamp already reports the desired solid RGB mode, there is
       // nothing to transmit. A fresh observation is preferable to sending.
-      if (request.Attempts == 0 && HasRecentStatusUnsafe() &&
-         IsObservedStaticColor(_observed.Status, wanted))
+      if (request.Attempts == 0 && HasRecentStatusUnsafe(lamp) &&
+         IsObservedStaticColor(lamp.Observed.Status, wanted))
       {
          request.ConfirmObserved();
          _log.LogDebug("Static color {Color} already observed; no command sent", wanted);
@@ -49,31 +46,34 @@ public sealed partial class BridgeRuntime
 
       // Do not send a color retry while the latest observation still says OFF.
       // Power-on recovery is a separate policy; retrying RGB will not repair it.
-      if (request.Attempts > 0 && HasRecentStatusUnsafe() &&
-         _observed.Status?.IsOn == false)
+      if (request.Attempts > 0 && HasRecentStatusUnsafe(lamp) &&
+         lamp.Observed.Status?.IsOn == false)
       {
          return;
       }
 
-      await EnsurePoweredOnUnsafeAsync(ct);
+      await EnsurePoweredOnUnsafeAsync(lamp, ct);
 
       // Preserve the state that was actually OBSERVED before transmission.
       // Later, monitoring can distinguish "the lamp stayed where it was"
       // from "the lamp changed to another state", which may indicate a user.
-      GoveeDeviceStatus? before = HasRecentStatusUnsafe() ? _observed.Status : null;
-      await _lamp!.SetColorAsync(wanted, ct);
+      GoveeDeviceStatus? before = HasRecentStatusUnsafe(lamp) ? lamp.Observed.Status : null;
+      await lamp.Client!.SetColorAsync(wanted, ct);
 
-      _attempts.RecordStaticSend(request, before);
+      lamp.Attempts.RecordStaticSend(request, before);
 
       _log.LogDebug("Requested static RGB {Color}; attempt {Attempt}",
          wanted, request.Attempts);
    }
 
-   /// <summary>Checks the device's observed state before allowing a static RGB retry.</summary>
+   /// <summary>
+   /// Uses later observations to verify an attempted solid color or schedule a
+   /// bounded retry without fighting another controller's observed changes.
+   /// </summary>
    private async Task ReconcileStaticColorUnsafeAsync(
-      GoveeDeviceStatus status, GoveeDeviceStatus? previous, CancellationToken ct)
+      LampSession lamp, GoveeDeviceStatus status, GoveeDeviceStatus? previous, CancellationToken ct)
    {
-      StaticColorRequest? request = _attempts.StaticColorRequest;
+      StaticColorRequest? request = lamp.Attempts.StaticColorRequest;
       if (request is null || request.Suspended)
       {
          return;
@@ -84,7 +84,7 @@ public sealed partial class BridgeRuntime
          // Confirmation is based on an observation, not a successful SendAsync.
          request.ConfirmObserved();
          // ConfirmObserved also clears the pending retry.
-         _session.ResetColorMismatch();
+         lamp.Session.ResetColorMismatch();
          return;
       }
 
@@ -110,15 +110,16 @@ public sealed partial class BridgeRuntime
          if (_options.AutoReleaseOnColorMismatch)
          {
             if (previous is not null &&
-               (previous.Color != status.Color || previous.ColorTemperatureKelvin != status.ColorTemperatureKelvin))
+               (previous.Color != status.Color ||
+                  previous.ColorTemperatureKelvin != status.ColorTemperatureKelvin))
             {
-               _session.MismatchSuspected = true;
+               lamp.Session.MismatchSuspected = true;
             }
 
-            _session.MismatchPollCount = _session.MismatchSuspected ? _session.MismatchPollCount + 1 : 0;
-            if (_session.MismatchPollCount >= _options.ColorMismatchRequiredPolls)
+            lamp.Session.MismatchPollCount = lamp.Session.MismatchSuspected ? lamp.Session.MismatchPollCount + 1 : 0;
+            if (lamp.Session.MismatchPollCount >= _options.ColorMismatchRequiredPolls)
             {
-               await ReleaseUnsafeAsync("Possible external static-color override", ct);
+               await ReleaseUnsafeAsync(lamp, "Possible external static-color override", ct);
             }
          }
          else
@@ -132,7 +133,7 @@ public sealed partial class BridgeRuntime
          return;
       }
 
-      if (!request.CanVerify(_observed.ObservedAt, _options.StaticVerificationGraceMs))
+      if (!request.CanVerify(lamp.Observed.ObservedAt, _options.StaticVerificationGraceMs))
       {
          // A cached response from before the write is not verification.
          // Give the lamp a little time to process the outgoing datagram.
@@ -153,7 +154,7 @@ public sealed partial class BridgeRuntime
             status.ColorTemperatureKelvin);
          if (_options.AutoReleaseOnColorMismatch)
          {
-            await ReleaseUnsafeAsync("Possible external color change while verifying", ct);
+            await ReleaseUnsafeAsync(lamp, "Possible external color change while verifying", ct);
          }
          return;
       }
@@ -181,64 +182,78 @@ public sealed partial class BridgeRuntime
       }
    }
 
-   /// <summary>Recognizes an observed solid RGB value; devStatus cannot identify scenes.</summary>
+   /// <summary>
+   /// Identifies an observed solid RGB state; devStatus cannot identify scenes.
+   /// </summary>
    private static bool IsObservedStaticColor(GoveeDeviceStatus? status, RgbColor wanted) =>
       status is { IsOn: true, ColorTemperatureKelvin: 0 } observed &&
       observed.Color == wanted;
 
-   /// <summary>Compares RGB plus mode, not brightness or power.</summary>
+   /// <summary>
+   /// Compares observed RGB and white-temperature mode, not brightness/power.
+   /// </summary>
    private static bool SameObservedColorMode(GoveeDeviceStatus left, GoveeDeviceStatus right) =>
       left.Color == right.Color &&
       left.ColorTemperatureKelvin == right.ColorTemperatureKelvin;
 
-   /// <summary>Transmits multizone samples, arming Razer when first needed.</summary>
+   /// <summary>
+   /// Sends one current full RGB frame in PC Streaming only; re-arms explicitly
+   /// after a commanded power cycle, but never transitions from PC Direct here.
+   /// </summary>
    private async Task ApplyRealtimeFrameUnsafeAsync(
-      RgbFrame frame, DateTimeOffset now, CancellationToken ct)
+      LampSession lamp, RgbFrame frame, DateTimeOffset now, CancellationToken ct)
    {
       // The worker wakes more often than our maximum allowed physical
       // Razer rate. Skip ticks until the minimum spacing has elapsed.
-      if (!_attempts.ShouldSendRealtime(frame, now, _options))
+      if (!lamp.Attempts.ShouldSendRealtime(frame, now, _options))
       {
          return;
       }
 
-      // Power, arm, and send are distinct protocol operations. Owning the
-      // lamp from the PC's viewpoint does not imply Razer is already armed.
-      await EnsurePoweredOnUnsafeAsync(ct);
-      if (!_session.RealtimeArmed)
+      // Streaming is explicitly armed by the IPC arm command, not by the
+      // arrival of an RGB frame. A power cycle may require a fresh ARM send.
+      await EnsurePoweredOnUnsafeAsync(lamp, ct);
+      if (lamp.Session.NeedsRealtimeRearm)
       {
-         await _lamp!.SetRealtimeEnabledAsync(true, ct);
-         // Best-effort transport assumption: we know we sent the ARM packet,
-         // not whether the lamp entered real-time mode. This field is Host
-         // bookkeeping, not a verified hardware bit.
-         _session.RealtimeArmed = true;
-         _log.LogInformation("Razer mode armed");
+         await lamp.Client!.SetRealtimeEnabledAsync(true, ct);
+         lamp.Session.RecordRearmSent();
          if (_options.RealtimeArmDelayMs > 0)
          {
             await Task.Delay(_options.RealtimeArmDelayMs, ct);
          }
       }
+      if (!lamp.Session.RealtimeArmed)
+      {
+         // A previous DISARM was sent or ARM failed. Never silently ARM
+         // a lamp in the frame pump without an explicit control transition.
+         return;
+      }
 
       // Each frame contains ALL logical RGB positions; it is not a delta.
       // The input frame is a private snapshot from ReceiveFrame, safe to read.
-      await _lamp!.SendRealtimeFrameAsync(frame, ct);
-      _attempts.RecordRealtimeSend(frame);
+      await lamp.Client!.SendRealtimeFrameAsync(frame, ct);
+      lamp.Attempts.RecordRealtimeSend(frame);
    }
 
-   /// <summary>Requests power once per PC session when no recent ON observation exists.</summary>
-   private async Task EnsurePoweredOnUnsafeAsync(CancellationToken ct)
+   /// <summary>
+   /// Performs at most one automatic power-on attempt per session, unless an
+   /// explicit power preference or fresh observation already determines it.
+   /// </summary>
+   private async Task EnsurePoweredOnUnsafeAsync(LampSession lamp, CancellationToken ct)
    {
       // If the lamp was recently observed on, avoid an unnecessary power
       // command. Otherwise request power on only once per PC ownership session.
       // Limitation: a lost power-on UDP packet is also suppressed thereafter.
-      if ((HasRecentStatusUnsafe() && _observed.Status?.IsOn == true) ||
-         _attempts.PowerOnRequested)
+      if (lamp.Session.RequestedPowerOn == false ||
+         !lamp.Settings.Capabilities.SupportsPower ||
+         (HasRecentStatusUnsafe(lamp) && lamp.Observed.Status?.IsOn == true) ||
+         lamp.Attempts.PowerOnRequested)
       {
          return;
       }
 
-      await _lamp!.SetPowerAsync(true, ct);
-      _attempts.RecordPowerOnSend();
+      await lamp.Client!.SetPowerAsync(true, ct);
+      lamp.Attempts.RecordPowerOnSend();
       await Task.Delay(BridgeHostDefaults.PowerCommandSettleDelayMs, ct);
    }
 }
