@@ -1,5 +1,4 @@
 using GoveeBridge.Core;
-using GoveeBridge.Core.Ipc;
 using GoveeBridge.Protocol;
 
 namespace GoveeBridge.Host;

@@ -1,5 +1,4 @@
 using GoveeBridge.Core;
-using Microsoft.Extensions.Configuration;
 
 namespace GoveeBridge.Host;
 

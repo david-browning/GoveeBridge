@@ -1,9 +1,7 @@
 using System.Text.Json;
 using GoveeBridge.Core;
 using GoveeBridge.Core.Ipc;
-using GoveeBridge.Host;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace GoveeBridge.Host.Tests;
 

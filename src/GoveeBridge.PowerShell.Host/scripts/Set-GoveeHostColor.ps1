@@ -1,11 +1,15 @@
-<# Default static-color test. Resumes once, then sends one red frame. #>
+<# Uniform streaming-color test. Resumes and arms once unless -NoResume. #>
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
     [object]$Color = 'Red',
     [ValidateRange(1, 256)][int]$LogicalLedCount = 8,
     [switch]$NoResume,
-    [string]$HostAddress = '127.0.0.1',
     [ValidateRange(1024, 65535)][int]$Port = 41005
 )
 Import-Module (Join-Path $PSScriptRoot '..\GoveeHost.psd1') -Force
-Set-GoveeHostColor -Color $Color -LogicalLedCount $LogicalLedCount -Resume:(-not $NoResume) -HostAddress $HostAddress -Port $Port -PassThru -Verbose:($VerbosePreference -eq 'Continue')
+if (-not $NoResume) {
+    [void](Resume-GoveeHostControl -LampId $LampId -Port $Port -Verbose:($VerbosePreference -eq 'Continue'))
+    [void](Arm-GoveeHostStreaming -LampId $LampId -Port $Port -Verbose:($VerbosePreference -eq 'Continue'))
+}
+Send-GoveeHostSolidFrame -LampId $LampId -Color $Color -LogicalLedCount $LogicalLedCount -Port $Port -PassThru -Verbose:($VerbosePreference -eq 'Continue')

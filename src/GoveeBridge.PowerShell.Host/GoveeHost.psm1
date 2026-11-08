@@ -249,7 +249,7 @@ function Get-GoveeHostStatus {
     [CmdletBinding()]
     param([ValidateRange(1024, 65535)][int]$Port = 41005,
         [ValidateRange(100, 30000)][int]$TimeoutMs = 5000,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     $request = [GoveeBridge.Core.Ipc.BridgeIpcRequests]::Status($LampId)
     if ($PreviewJson) { return ConvertTo-GoveeHostJson -Request $request }
@@ -261,7 +261,7 @@ function Get-GoveeHostLampStatus {
     [CmdletBinding()]
     param([ValidateRange(1024, 65535)][int]$Port = 41005,
         [ValidateRange(100, 30000)][int]$TimeoutMs = 5000,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     $request = [GoveeBridge.Core.Ipc.BridgeIpcRequests]::LampStatus($LampId)
     if ($PreviewJson) { return ConvertTo-GoveeHostJson -Request $request }
@@ -273,7 +273,7 @@ function Resume-GoveeHostControl {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     param([ValidateRange(1024, 65535)][int]$Port = 41005,
         [ValidateRange(100, 30000)][int]$TimeoutMs = 5000,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     if (-not $PSCmdlet.ShouldProcess("127.0.0.1:$Port", 'Grant PC ownership')) { return }
     $request = [GoveeBridge.Core.Ipc.BridgeIpcRequests]::Resume($LampId)
@@ -286,7 +286,7 @@ function Release-GoveeHostControl {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     param([ValidateRange(1024, 65535)][int]$Port = 41005,
         [ValidateRange(100, 30000)][int]$TimeoutMs = 5000,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     if (-not $PSCmdlet.ShouldProcess("127.0.0.1:$Port", 'Return ownership to Manual')) { return }
     $request = [GoveeBridge.Core.Ipc.BridgeIpcRequests]::Release($LampId)
@@ -299,7 +299,7 @@ function Arm-GoveeHostStreaming {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     param([ValidateRange(1024, 65535)][int]$Port = 41005,
         [ValidateRange(100, 30000)][int]$TimeoutMs = 5000,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     if (-not $PSCmdlet.ShouldProcess("127.0.0.1:$Port", 'Arm PC Streaming')) { return }
     $request = [GoveeBridge.Core.Ipc.BridgeIpcRequests]::Arm($LampId)
@@ -312,7 +312,7 @@ function Disarm-GoveeHostStreaming {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     param([ValidateRange(1024, 65535)][int]$Port = 41005,
         [ValidateRange(100, 30000)][int]$TimeoutMs = 5000,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     if (-not $PSCmdlet.ShouldProcess("127.0.0.1:$Port", 'Disarm PC Streaming')) { return }
     $request = [GoveeBridge.Core.Ipc.BridgeIpcRequests]::Disarm($LampId)
@@ -326,7 +326,7 @@ function Set-GoveeHostPower {
     param([ValidateSet('On', 'Off')][string]$State = 'On',
         [ValidateRange(1024, 65535)][int]$Port = 41005,
         [ValidateRange(100, 30000)][int]$TimeoutMs = 5000,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     if (-not $PSCmdlet.ShouldProcess("127.0.0.1:$Port", "Request lamp power $State")) { return }
     $request = [GoveeBridge.Core.Ipc.BridgeIpcRequests]::SetPower(($State -eq 'On'), $LampId)
@@ -340,7 +340,7 @@ function Set-GoveeHostBrightness {
     param([ValidateRange(0, 100)][int]$BrightnessPercent = 50,
         [ValidateRange(1024, 65535)][int]$Port = 41005,
         [ValidateRange(100, 30000)][int]$TimeoutMs = 5000,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     if (-not $PSCmdlet.ShouldProcess("127.0.0.1:$Port", "Request brightness $BrightnessPercent%")) { return }
     $request = [GoveeBridge.Core.Ipc.BridgeIpcRequests]::SetBrightness($BrightnessPercent, $LampId)
@@ -357,7 +357,7 @@ function Set-GoveeHostColor {
     param([object]$Color = 'Red',
         [ValidateRange(1024, 65535)][int]$Port = 41005,
         [ValidateRange(100, 30000)][int]$TimeoutMs = 5000,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     $rgb = ConvertTo-GoveeHostRgb -Color $Color
     if (-not $PSCmdlet.ShouldProcess("127.0.0.1:$Port", "Request solid RGB $rgb")) { return }
@@ -372,7 +372,7 @@ function Set-GoveeHostColorTemperature {
     param([ValidateRange(1, 100000)][int]$Kelvin = 3500,
         [ValidateRange(1024, 65535)][int]$Port = 41005,
         [ValidateRange(100, 30000)][int]$TimeoutMs = 5000,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     if (-not $PSCmdlet.ShouldProcess("127.0.0.1:$Port", "Request white temperature $Kelvin K")) { return }
     $request = [GoveeBridge.Core.Ipc.BridgeIpcRequests]::SetColorTemperature($Kelvin, $LampId)
@@ -389,7 +389,7 @@ function Send-GoveeHostFrame {
     param([Parameter(Mandatory = $true)][object[]]$Colors,
         [ValidateRange(1024, 65535)][int]$Port = 41005,
         [switch]$PassThru,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     $frame = New-GoveeHostRgbFrame -Colors $Colors
     $request = [GoveeBridge.Core.Ipc.BridgeIpcRequests]::SendFrame($frame, $LampId)
@@ -408,7 +408,7 @@ function Send-GoveeHostSolidFrame {
         [ValidateRange(1, 256)][int]$LogicalLedCount = 8,
         [ValidateRange(1024, 65535)][int]$Port = 41005,
         [switch]$PassThru,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$PreviewJson)
     $colors = [object[]]::new($LogicalLedCount)
     for ($i = 0; $i -lt $LogicalLedCount; $i++) { $colors[$i] = $Color }
@@ -428,7 +428,7 @@ function Start-GoveeHostAnimation {
         [ValidateRange(-1, 3600)][int]$DurationSeconds = 60,
         [ValidateRange(1, 256)][int]$LogicalLedCount = 8,
         [ValidateRange(1024, 65535)][int]$Port = 41005,
-        [AllowNull()][string]$LampId,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId,
         [switch]$Resume,
         [switch]$ReleaseOnExit)
 
@@ -471,7 +471,7 @@ function Watch-GoveeHostStatus {
     param([ValidateRange(1, 3600)][int]$IntervalSeconds = 2,
         [ValidateRange(1, 10000)][int]$Count = 30,
         [ValidateRange(1024, 65535)][int]$Port = 41005,
-        [AllowNull()][string]$LampId)
+        [Parameter(Mandatory = $true)][ValidateNotNullOrWhiteSpace()][string]$LampId)
     for ($index = 0; $index -lt $Count; $index++) {
         $result = Get-GoveeHostStatus -LampId $LampId -Port $Port -Verbose:($VerbosePreference -eq 'Continue')
         [pscustomobject]@{
