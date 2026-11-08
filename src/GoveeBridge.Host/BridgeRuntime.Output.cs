@@ -201,18 +201,21 @@ public sealed partial class BridgeRuntime
    /// after a commanded power cycle, but never transitions from PC Direct here.
    /// </summary>
    private async Task ApplyRealtimeFrameUnsafeAsync(
-      LampSession lamp, RgbFrame frame, DateTimeOffset now, CancellationToken ct)
+      LampSession lamp, 
+      RgbFrame frame, 
+      DateTimeOffset now, 
+      CancellationToken ct)
    {
       // The worker wakes more often than our maximum allowed physical
-      // Razer rate. Skip ticks until the minimum spacing has elapsed.
+      // Razer rate. Skip ticks until the minimum spacing has elapsed.      
       if (!lamp.Attempts.ShouldSendRealtime(frame, now, _options))
       {
          return;
       }
 
-      // Streaming is explicitly armed by the IPC arm command, not by the
-      // arrival of an RGB frame. A power cycle may require a fresh ARM send.
-      await EnsurePoweredOnUnsafeAsync(lamp, ct);
+      // Do not issue ordinary power commands during Razer streaming.
+      // Power is handled before ARM and by explicit power commands.
+
       if (lamp.Session.NeedsRealtimeRearm)
       {
          await lamp.Client!.SetRealtimeEnabledAsync(true, ct);
@@ -222,6 +225,7 @@ public sealed partial class BridgeRuntime
             await Task.Delay(_options.RealtimeArmDelayMs, ct);
          }
       }
+
       if (!lamp.Session.RealtimeArmed)
       {
          // A previous DISARM was sent or ARM failed. Never silently ARM
