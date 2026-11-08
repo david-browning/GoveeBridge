@@ -93,6 +93,7 @@ public sealed partial class BridgeRuntime : IDisposable
       {
          return false;
       }
+
       FrameReceipt receipt = lamp.Frames.Receive(frame, lamp.Client is null);
       if (receipt.LogDiagnostic)
       {
@@ -100,6 +101,7 @@ public sealed partial class BridgeRuntime : IDisposable
             lamp.Settings.Id, receipt.ReceivedCount, receipt.Frame.Colors.Count,
             GoveeHelpers.AverageColor(receipt.Frame));
       }
+      
       return true;
    }
 
@@ -174,16 +176,18 @@ public sealed partial class BridgeRuntime : IDisposable
             {
                await ApplyStaticColorUnsafeAsync(lamp, retry.Color, now, ct);
             }
+
             return;
          }
+
          if (lamp.Session.Mode != ControlMode.PcStreaming)
          {
             return;
          }
 
          FrameSnapshot pending = lamp.Frames.Snapshot();
-         DateTimeOffset lastActivity = pending.Frame is null
-            ? lamp.Session.StreamingBeganAt : pending.ReceivedAt;
+         DateTimeOffset lastActivity = pending.Frame is null ? 
+            lamp.Session.StreamingBeganAt : pending.ReceivedAt;
          if (now - lastActivity > TimeSpan.FromMilliseconds(_options.FrameStaleAfterMs))
          {
             await ReleaseUnsafeAsync(lamp, "Frame stream expired", ct);
@@ -195,6 +199,7 @@ public sealed partial class BridgeRuntime : IDisposable
          {
             return;
          }
+
          await ApplyRealtimeFrameUnsafeAsync(lamp, pending.Frame, now, ct);
       }
       finally

@@ -493,6 +493,7 @@ public sealed partial class BridgeRuntime
                log = true;
             }
          }
+
          return new FrameReceipt(copy, count, log);
       }
 

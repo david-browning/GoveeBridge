@@ -27,7 +27,7 @@ public sealed partial class BridgeRuntime
    /// Central action-to-control-mode permission table. Mode transitions are
    /// handled by methods, not hidden as mutations of the table.
    /// </summary>
-   private static readonly FrozenDictionary<string, ModeMask> CommandPermissions =
+   private static readonly FrozenDictionary<string, ModeMask> _commandPermissions =
       new Dictionary<string, ModeMask>(StringComparer.OrdinalIgnoreCase)
       {
          [BridgeIpcActions.GetHostStatus] = ModeMask.Any,
@@ -45,6 +45,7 @@ public sealed partial class BridgeRuntime
    /// <summary>
    /// Selects a lamp by configured stable identity, checks the central mode
    /// policy, then executes one Core DTO payload under that lamp's state gate.
+   /// Device-specific parameter validation belongs to the physical client.
    /// </summary>
    public async Task<BridgeIpcResponse> ExecuteCommandAsync(
       string command, JsonElement? data, string lampId, CancellationToken ct)
@@ -63,7 +64,7 @@ public sealed partial class BridgeRuntime
       await lamp!.Gate.WaitAsync(ct);
       try
       {
-         if (!CommandPermissions.ContainsKey(action))
+         if (!_commandPermissions.ContainsKey(action))
          {
             return new BridgeIpcErrorResponse($"Unknown command: {command}");
          }
@@ -97,6 +98,12 @@ public sealed partial class BridgeRuntime
       {
          throw;
       }
+      catch (LampParameterException ex)
+      {
+         _log.LogWarning(ex, "Invalid lamp parameter for command {Action} on lamp {LampId}",
+            action, lamp.Settings.Id);
+         return new BridgeIpcErrorResponse(ex.Message);
+      }
       catch (Exception ex) when (ex is JsonException or ArgumentException)
       {
          _log.LogWarning(ex, "Invalid IPC payload for lamp {LampId}", lamp.Settings.Id);
@@ -119,7 +126,7 @@ public sealed partial class BridgeRuntime
    /// </summary>
    private static bool IsCommandAllowedUnsafe(LampSession lamp, string action)
    {
-      if (!CommandPermissions.TryGetValue(action, out ModeMask supported))
+      if (!_commandPermissions.TryGetValue(action, out ModeMask supported))
       {
          return false;
       }
@@ -137,6 +144,7 @@ public sealed partial class BridgeRuntime
 
    /// <summary>
    /// Uses the existing Core IPC payload type; parameterless commands omit data.
+   /// This validates the wire envelope, not device-specific parameter ranges.
    /// </summary>
    private static T DeserializePayload<T>(JsonElement? data) where T : class
    {
@@ -144,6 +152,7 @@ public sealed partial class BridgeRuntime
       {
          throw new ArgumentException($"Missing or invalid payload for {typeof(T).Name}.");
       }
+
       return payload.Deserialize<T>() ??
          throw new JsonException($"Could not deserialize {typeof(T).Name}.");
    }
@@ -158,12 +167,14 @@ public sealed partial class BridgeRuntime
       {
          return SnapshotUnsafe(lamp);
       }
+
       if (lamp.Session.RealtimeArmed)
       {
          return new BridgeIpcErrorResponse(
             "Previous DISARM has not been submitted successfully. Retry disarm or release.",
             SnapshotUnsafe(lamp));
       }
+
       lamp.Frames.Clear();
       lamp.Attempts.ResetForNewSession();
       lamp.Session.BeginPcOwnership(HasRecentStatusUnsafe(lamp) && lamp.Observed.Status?.IsOn == true);
@@ -223,7 +234,7 @@ public sealed partial class BridgeRuntime
    /// remains visible as RealtimeArmed and can be retried explicitly.
    /// </summary>
    private async Task<BridgeIpcResponse> DisarmCommandUnsafeAsync(
-      LampSession lamp, 
+      LampSession lamp,
       CancellationToken ct)
    {
       bool changed = lamp.Session.Mode == ControlMode.PcStreaming;
@@ -266,7 +277,7 @@ public sealed partial class BridgeRuntime
    /// </summary>
    private async Task ReleaseUnsafeAsync(
       LampSession lamp,
-      string reason, 
+      string reason,
       CancellationToken ct)
    {
       bool changed = lamp.Session.Mode != ControlMode.Manual;
@@ -297,7 +308,7 @@ public sealed partial class BridgeRuntime
    /// devStatus may be intentionally disabled while Razer is armed.
    /// </summary>
    private async Task<BridgeIpcResponse> GetLampStatusUnsafeAsync(
-      LampSession lamp, 
+      LampSession lamp,
       CancellationToken ct)
    {
       if (lamp.Client is null)
@@ -320,7 +331,7 @@ public sealed partial class BridgeRuntime
    /// implicit power-on, while the next ON requires a fresh stream frame.
    /// </summary>
    private async Task<BridgeIpcResponse> SetLampPowerUnsafeAsync(
-      LampSession lamp, 
+      LampSession lamp,
       bool isOn,
       CancellationToken ct)
    {
@@ -343,28 +354,23 @@ public sealed partial class BridgeRuntime
          lamp.Attempts.ClearRealtimeHistory();
          lamp.Frames.Clear();
       }
-      
+
       return SnapshotUnsafe(lamp);
    }
 
    /// <summary>
    /// Sets global brightness in either PC mode. Zero maps to explicit power
-   /// OFF because Govee's physical brightness command accepts only 1..100.
+   /// OFF as Host policy; the client validates physical brightness 1..100.
    /// </summary>
    private async Task<BridgeIpcResponse> SetLampBrightnessUnsafeAsync(
-      LampSession lamp, 
-      int percent, 
+      LampSession lamp,
+      int percent,
       CancellationToken ct)
    {
       var error = CheckCapabilityUnsafe(lamp, lamp.Settings.Capabilities.SupportsBrightness, "brightness");
       if (error is not null)
       {
          return error;
-      }
-
-      if (percent is < 0 or > 100)
-      {
-         return new BridgeIpcErrorResponse("Brightness must be 0..100.");
       }
 
       if (percent == 0)
@@ -381,8 +387,8 @@ public sealed partial class BridgeRuntime
    /// static-color retry pipeline. Streaming mode is disallowed by policy.
    /// </summary>
    private async Task<BridgeIpcResponse> SetLampColorUnsafeAsync(
-      LampSession lamp, 
-      BridgeIpcRgbColor rgb, 
+      LampSession lamp,
+      BridgeIpcRgbColor rgb,
       CancellationToken ct)
    {
       var error = CheckDirectCapabilityUnsafe(lamp, lamp.Settings.Capabilities.SupportsRgb, "solid RGB");
@@ -403,10 +409,11 @@ public sealed partial class BridgeRuntime
 
    /// <summary>
    /// Requests white color temperature and cancels any older static RGB retry.
+   /// Physical temperature limits are validated by the device client.
    /// </summary>
    private async Task<BridgeIpcResponse> SetLampTemperatureUnsafeAsync(
-      LampSession lamp, 
-      int kelvin, 
+      LampSession lamp,
+      int kelvin,
       CancellationToken ct)
    {
       var error = CheckDirectCapabilityUnsafe(lamp, lamp.Settings.Capabilities.SupportsColorTemperature, "color temperature");
@@ -418,11 +425,6 @@ public sealed partial class BridgeRuntime
       if (lamp.Session.RequestedPowerOn == false)
       {
          return new BridgeIpcErrorResponse("Turn the lamp on before setting white temperature.");
-      }
-
-      if (kelvin <= 0)
-      {
-         return new BridgeIpcErrorResponse("Kelvin must be positive.");
       }
 
       await lamp.Client!.SetColorTemperatureAsync(kelvin, ct);
@@ -437,7 +439,7 @@ public sealed partial class BridgeRuntime
    /// </summary>
    private static BridgeIpcErrorResponse? CheckCapabilityUnsafe(
       LampSession lamp,
-      bool supported, 
+      bool supported,
       string feature)
    {
       if (lamp.Client is null)
@@ -454,8 +456,8 @@ public sealed partial class BridgeRuntime
    /// the logical mode has already returned to PC Direct.
    /// </summary>
    private static BridgeIpcErrorResponse? CheckDirectCapabilityUnsafe(
-      LampSession lamp, 
-      bool supported, 
+      LampSession lamp,
+      bool supported,
       string feature)
    {
       if (lamp.Session.RealtimeArmed)

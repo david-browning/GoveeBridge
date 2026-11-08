@@ -7,6 +7,7 @@ namespace GoveeBridge.Protocol;
 /// <summary>
 /// A device-scoped Govee LAN client using the Host's shared UDP 4002 listener.
 /// Each lamp has a separate I/O gate; the network's receive socket is shared.
+/// Physical parameter validation belongs here, independent of Host policy.
 /// </summary>
 public sealed class GoveeLanClient : IGoveeRealtimeClient
 {
@@ -19,7 +20,8 @@ public sealed class GoveeLanClient : IGoveeRealtimeClient
       if (!IPAddress.TryParse(ip, out IPAddress? address) ||
          address.AddressFamily != AddressFamily.InterNetwork)
       {
-         throw new ArgumentException("A Govee lamp requires an IPv4 address.", nameof(ip));
+         throw new LampParameterException(
+            "A Govee lamp requires an IPv4 address.", nameof(ip));
       }
       _lamp = new IPEndPoint(address, GoveeLanPorts.Command);
       _timeoutMs = timeoutMs;
@@ -34,8 +36,10 @@ public sealed class GoveeLanClient : IGoveeRealtimeClient
    /// <summary>
    /// Submits a complete multizone Razer frame; no physical receipt is implied.
    /// </summary>
-   public Task SendRealtimeFrameAsync(RgbFrame frame, CancellationToken ct) =>
-      SendAsync(GoveeLanPackets.RazerFrame(frame, _gradient), ct);
+   public Task SendRealtimeFrameAsync(RgbFrame frame, CancellationToken ct)
+   {
+      return SendAsync(GoveeLanPackets.RazerFrame(frame, _gradient), ct);
+   }
 
    /// <summary>
    /// Queries fresh status and accepts only a reply from this lamp's IPv4 address.
@@ -60,22 +64,28 @@ public sealed class GoveeLanClient : IGoveeRealtimeClient
       SendAsync(GoveeLanPackets.Power(on), ct);
 
    /// <summary>
-   /// Submits a global brightness command with physical range validation.
+   /// Submits a global brightness command with client-owned physical range validation.
+   /// A desired brightness of zero is translated into a power-off command by Host policy;
+   /// it is not a valid physical brightness command.
    /// </summary>
-   public Task SetBrightnessAsync(int percentage, CancellationToken ct) =>
-      SendAsync(GoveeLanPackets.Brightness(percentage), ct);
+   public Task SetBrightnessAsync(int percentage, CancellationToken ct)
+   {
+      return SendAsync(GoveeLanPackets.Brightness(percentage), ct);
+   }
 
    /// <summary>
-   /// Submits a solid RGB color command.
+   /// Submits a solid RGB color command. Component ranges are enforced by RgbColor bytes.
    /// </summary>
    public Task SetColorAsync(RgbColor color, CancellationToken ct) =>
       SendAsync(GoveeLanPackets.Color(color), ct);
 
    /// <summary>
-   /// Submits a white-temperature command using the device LAN codec.
+   /// Submits a white-temperature command after checking the lamp's physical range.
    /// </summary>
-   public Task SetColorTemperatureAsync(int kelvin, CancellationToken ct) =>
-      SendAsync(GoveeLanPackets.ColorTemperature(kelvin), ct);
+   public Task SetColorTemperatureAsync(int kelvin, CancellationToken ct)
+   {
+      return SendAsync(GoveeLanPackets.ColorTemperature(kelvin), ct);
+   }
 
    /// <summary>
    /// Serializes physical sends for this lamp, independently of other lamps.

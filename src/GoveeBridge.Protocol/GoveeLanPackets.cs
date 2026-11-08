@@ -46,8 +46,12 @@ public static class GoveeLanPackets
 
    public static string Brightness(int percentage)
    {
-      ArgumentOutOfRangeException.ThrowIfLessThan(percentage, _minBrightness);
-      ArgumentOutOfRangeException.ThrowIfGreaterThan(percentage, _maxBrightness);
+      if (percentage is < GoveeLanPackets._minBrightness or > GoveeLanPackets._maxBrightness)
+      {
+         throw new LampParameterException(
+            $"Brightness must be {GoveeLanPackets._minBrightness}..{GoveeLanPackets._maxBrightness} for Govee LAN commands.",
+            nameof(percentage));
+      }
 
       return Serialize(
           GoveeCommands.BrightnessCommand,
@@ -75,8 +79,12 @@ public static class GoveeLanPackets
 
    public static string ColorTemperature(int kelvin)
    {
-      ArgumentOutOfRangeException.ThrowIfLessThan(kelvin, _minColorTemperature);
-      ArgumentOutOfRangeException.ThrowIfGreaterThan(kelvin, _maxColorTemperature);
+      if (kelvin is < GoveeLanPackets._minColorTemperature or > GoveeLanPackets._maxColorTemperature)
+      {
+         throw new LampParameterException(
+            $"Color temperature must be {GoveeLanPackets._minColorTemperature}..{GoveeLanPackets._maxColorTemperature} K.",
+            nameof(kelvin));
+      }
 
       return Serialize(
           GoveeCommands.ColorCommand,
@@ -107,6 +115,13 @@ public static class GoveeLanPackets
    /// </summary>
    public static string RazerFrame(RgbFrame frame, bool gradient = false)
    {
+      int? count = frame?.Colors?.Count;
+      if (count is null or < 1 or > byte.MaxValue)
+      {
+         throw new LampParameterException(
+            $"A real-time frame must contain 1 to {byte.MaxValue} colors.", nameof(frame));
+      }
+
       byte[] binary = GoveeRazerEncoder.EncodeFrame(frame, gradient);
       return SerializeRazer(binary);
    }
@@ -146,8 +161,7 @@ public static class GoveeLanPackets
 
          GoveeStatusPayload payload = message.Data;
 
-         if (payload.Color is null ||
-             payload.OnOff is not (0 or 1))
+         if (payload.Color is null || payload.OnOff is not (0 or 1))
          {
             return false;
          }

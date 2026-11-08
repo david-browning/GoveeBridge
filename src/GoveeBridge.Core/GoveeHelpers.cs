@@ -13,8 +13,11 @@ public static class GoveeHelpers
    /// Parses a complete frame and required stable lampId in one JSON pass.
    /// Invalid frames do not reach the management-command queue as valid frames.
    /// </summary>
-   public static bool TryParseFrame(ReadOnlySpan<byte> payload, int maxLeds,
-      out RgbFrame? frame, [NotNullWhen(true)] out string? lampId)
+   public static bool TryParseFrame(
+      ReadOnlySpan<byte> payload, 
+      int maxLeds,
+      out RgbFrame? frame, 
+      [NotNullWhen(true)] out string? lampId)
    {
       frame = null;
       lampId = null;
@@ -35,6 +38,7 @@ public static class GoveeHelpers
          {
             return false;
          }
+
          lampId = selector.GetString();
 
          int count = root.GetProperty("count").GetInt32();
@@ -58,8 +62,13 @@ public static class GoveeHelpers
             byte b = checked((byte)iterator.Current.GetInt32());
             colors.Add(new RgbColor(r, g, b));
          }
+
          frame = new RgbFrame(colors);
+
+         // lampId is actually validated when trying to parse it out of the root.
+#pragma warning disable CS8762 // Parameter must have a non-null value when exiting in some condition.
          return true;
+#pragma warning restore CS8762 // Parameter must have a non-null value when exiting in some condition.
       }
       catch (Exception ex) when (ex is JsonException or KeyNotFoundException or
          InvalidOperationException or OverflowException or FormatException)

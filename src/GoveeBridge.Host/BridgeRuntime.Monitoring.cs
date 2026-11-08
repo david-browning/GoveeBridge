@@ -42,8 +42,8 @@ public sealed partial class BridgeRuntime
          if (_options.LogLampStatusChanges)
          {
             _log.LogInformation(
-               "Observed lamp state: On={On}, Brightness={Brightness}%, RGB={Color}, Kelvin={Kelvin}",
-               status.IsOn, status.Brightness, status.Color, status.ColorTemperatureKelvin);
+               "Observed \"{Name}\" state: On={On}, Brightness={Brightness}%, RGB={Color}, Kelvin={Kelvin}",
+               lamp.Settings.Id, status.IsOn, status.Brightness, status.Color, status.ColorTemperatureKelvin);
          }
          PublishUnsafe(lamp, BridgeEventKind.LampStatusChanged, "Observed via devStatus");
       }
@@ -100,15 +100,17 @@ public sealed partial class BridgeRuntime
       {
          return;
       }
+
       lamp.Observed.Online = online;
       if (online)
       {
-         _log.LogInformation("Lamp online");
+         _log.LogInformation($"Lamp \"{lamp.Settings.Id}\" online");
       }
       else
       {
-         _log.LogWarning("Lamp unreachable or status timed out");
+         _log.LogWarning($"Lamp \"{lamp.Settings.Id}\" unreachable or status timed out");
       }
+      
       PublishUnsafe(lamp, online ? BridgeEventKind.LampOnline : BridgeEventKind.LampOffline,
          online ? "online" : "offline");
    }
